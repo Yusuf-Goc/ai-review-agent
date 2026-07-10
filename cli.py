@@ -7,7 +7,7 @@ from agent.diff_parser import demo_diff, parse_diff
 from agent.git_diff import GitDiffError, get_git_diff
 from agent.payload_builder import attach_static_findings, build_code_payload
 from agent.report_formatter import format_review_report
-from agent.reviewer import analyze_code, analyze_source_code
+from agent.reviewer import analyze_diff_in_batches, analyze_source_code
 
 
 def read_from_stdin():
@@ -131,12 +131,10 @@ def main():
             retry_delay=args.retry_delay,
         )
     else:
-        review_result = analyze_code(
+        review_result = analyze_diff_in_batches(
             input_text,
             model=args.model,
             max_review_lines=args.max_review_lines,
-            retries=args.retries,
-            retry_delay=args.retry_delay,
         )
     print("[AI Code Reviewer Sonuc Raporu]")
     print("-" * 50)

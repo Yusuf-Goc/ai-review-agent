@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from agent.config import (
     DEFAULT_MODEL,
     DEFAULT_RETRIES,
@@ -17,6 +19,7 @@ from agent.llm_client import (
     normalize_json_response,
 )
 from agent.payload_builder import attach_static_findings, build_code_payload
+from agent.review_batcher import filter_reviewable_files, make_review_batches
 
 
 def merge_findings(model_findings, local_findings):
@@ -123,6 +126,57 @@ def analyze_code(diff_text, client=None, model=DEFAULT_MODEL, max_review_lines=M
     return analyze_payload(review_payload, client=client, model=model, retries=retries, retry_delay=retry_delay)
 
 
+def analyze_diff_in_batches(
+    diff_text,
+    client=None,
+    model=DEFAULT_MODEL,
+    max_review_lines=MAX_REVIEW_LINES,
+):
+    base_payload = parse_diff(diff_text, max_review_lines=max_review_lines)
+
+    reviewable_files = filter_reviewable_files(base_payload.get("files", []))
+
+    if not reviewable_files:
+        return {
+            "summary": "Incelenebilir Python, SQL veya Go dosya degisikligi bulunamadi.",
+            "findings": [],
+        }
+
+    batches = make_review_batches(reviewable_files)
+
+    all_findings = []
+    summaries = []
+
+    for index, batch in enumerate(batches, start=1):
+        batch_payload = deepcopy(base_payload)
+        batch_payload["files"] = batch.files
+        batch_payload["batch"] = {
+            "index": index,
+            "total": len(batches),
+            "file_count": len(batch.files),
+            "estimated_lines": batch.estimated_lines,
+        }
+
+        result = analyze_payload(
+            batch_payload,
+            client=client,
+            model=model,
+        )
+
+        summaries.append(
+            f"Batch {index}/{len(batches)}: {result.get('summary', 'Ozet yok')}"
+        )
+        all_findings.extend(result.get("findings", []))
+
+    return {
+        "summary": (
+            f"{len(reviewable_files)} dosya {len(batches)} batch halinde incelendi. "
+            + " ".join(summaries)
+        ),
+        "findings": all_findings,
+    }
+
+
 def analyze_source_code(
     code_text,
     file_name="submitted_code",
@@ -150,4 +204,3 @@ def analyze_source_code(
         }
 
     return analyze_payload(review_payload, client=client, model=model, retries=retries, retry_delay=retry_delay)
-
