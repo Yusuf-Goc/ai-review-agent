@@ -135,6 +135,8 @@ def main():
             input_text,
             model=args.model,
             max_review_lines=args.max_review_lines,
+            retries=args.retries,
+            retry_delay=args.retry_delay,
         )
     print("[AI Code Reviewer Sonuc Raporu]")
     print("-" * 50)
