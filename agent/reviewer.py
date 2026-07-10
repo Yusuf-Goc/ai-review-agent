@@ -129,10 +129,10 @@ def analyze_code(diff_text, client=None, model=DEFAULT_MODEL, max_review_lines=M
 def analyze_diff_in_batches(
     diff_text,
     client=None,
-    model="gemini-2.5-flash",
-    max_review_lines=500,
-    retries=2,
-    retry_delay=2.0,
+    model=DEFAULT_MODEL,
+    max_review_lines=MAX_REVIEW_LINES,
+    retries=DEFAULT_RETRIES,
+    retry_delay=DEFAULT_RETRY_DELAY,
 ):
     base_payload = parse_diff(diff_text, max_review_lines=max_review_lines)
 

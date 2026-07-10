@@ -1,10 +1,12 @@
 import argparse
 import json
+import os
 import sys
 
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
 from agent.git_diff import GitDiffError, get_git_diff
+from agent.github_reporter import GitHubReporterError, post_review_result_to_pr
 from agent.payload_builder import attach_static_findings, build_code_payload
 from agent.report_formatter import format_review_report
 from agent.reviewer import analyze_diff_in_batches, analyze_source_code
@@ -16,12 +18,24 @@ def read_from_stdin():
     return sys.stdin.read()
 
 
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Gerekli environment degiskeni bulunamadi: {name}")
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description="Structured AI code review agent")
     input_group = parser.add_mutually_exclusive_group()
     input_group.add_argument("--diff-file", help="Okunacak unified diff dosyasi")
     input_group.add_argument("--code-file", help="Commit diff olmadan incelenecek kod dosyasi")
     input_group.add_argument("--demo", action="store_true", help="Ornek diff ile calistir")
+    input_group.add_argument(
+        "--github-pr",
+        action="store_true",
+        help="GitHub Actions pull request modunda calistir",
+    )
     parser.add_argument("--base", help="Karsilastirma icin base commit/ref")
     parser.add_argument("--head", help="Karsilastirma icin head commit/ref")
     parser.add_argument("--language", help="Kod dili. Verilmezse dosya uzantisindan tahmin edilir")
@@ -55,7 +69,7 @@ def main():
         print("Hata: --base ve --head birlikte kullanilmalidir.", file=sys.stderr)
         return 2
 
-    manual_input_selected = args.demo or args.diff_file or args.code_file
+    manual_input_selected = args.demo or args.diff_file or args.code_file or args.github_pr
     git_diff_selected = args.base and args.head
 
     if manual_input_selected and git_diff_selected:
@@ -81,6 +95,17 @@ def main():
             input_text = code_file.read()
         input_mode = "full_code"
         file_name = args.code_file
+    elif args.github_pr:
+        try:
+            base_sha = require_env("BASE_SHA")
+            head_sha = require_env("HEAD_SHA")
+
+            input_text = get_git_diff(base_sha, head_sha)
+            input_mode = "diff"
+            file_name = f"{base_sha}..{head_sha}"
+        except Exception as exc:
+            print(f"Hata: GitHub PR diff alinamadi: {exc}", file=sys.stderr)
+            return 1
     elif args.base and args.head:
         try:
             input_text = get_git_diff(args.base, args.head)
@@ -142,6 +167,15 @@ def main():
     print("-" * 50)
     print(format_review_report(review_result))
     print("-" * 50)
+
+    if args.github_pr:
+        try:
+            post_review_result_to_pr(review_result)
+            print("GitHub PR yorumu basariyla gonderildi.")
+        except GitHubReporterError as exc:
+            print(f"Hata: {exc}", file=sys.stderr)
+            return 1
+
     return 0
 
 
