@@ -569,84 +569,141 @@ def analyze_full_repository(
     scan_plan = build_full_scan_plan(readable_file_items)
 
     all_findings = []
-    successful_units = 0
-    failed_units = 0
 
-    for unit_index, scan_unit in enumerate(scan_plan, start=1):
-        try:
-            payload = build_full_scan_unit_payload(
-                scan_unit,
-                max_review_lines=max_review_lines,
-            )
+    first_pass_success = 0
+    second_pass_success = 0
+    fallback_pass_success = 0
 
-            attach_static_findings(payload)
+    first_pass_failed = []
+    second_pass_failed = []
+    final_failed = []
 
-            result = analyze_payload(
-                payload,
-                client=client,
-                model=model,
-                retries=retries,
-                retry_delay=retry_delay,
-            )
+    for scan_unit in scan_plan:
+        result = _analyze_full_scan_unit(
+            scan_unit,
+            client=client,
+            model=model,
+            max_review_lines=max_review_lines,
+            retries=retries,
+            retry_delay=retry_delay,
+        )
 
-            if _looks_like_model_failure(result):
-                failed_units += 1
-
-                affected_files = ", ".join(
-                    file_slice.path for file_slice in scan_unit.slices
-                )
-
-                all_findings.append(
-                    {
-                        "file": affected_files or scan_unit.unit_id,
-                        "line": 1,
-                        "severity": "medium",
-                        "category": "logic_error",
-                        "message": (
-                            f"{scan_unit.unit_id} AI analizi geçici model hatası "
-                            "nedeniyle tamamlanamadı."
-                        ),
-                        "suggestion": (
-                            "Gemini yoğunluğu azaldığında full scan workflow'unu "
-                            "tekrar çalıştırın. Bu parça raporda başarısız olarak işaretlendi."
-                        ),
-                        "source": "full_repo_ai_scan",
-                    }
-                )
-
-                all_findings.extend(result.get("findings", []))
-                continue
-
-            successful_units += 1
-            all_findings.extend(result.get("findings", []))
-
-        except Exception as exc:
-            failed_units += 1
-
-            affected_files = ", ".join(
-                file_slice.path for file_slice in scan_unit.slices
-            )
-
-            all_findings.append(
+        if result["success"]:
+            first_pass_success += 1
+            all_findings.extend(result["findings"])
+        else:
+            first_pass_failed.append(
                 {
-                    "file": affected_files or scan_unit.unit_id,
-                    "line": 1,
-                    "severity": "medium",
-                    "category": "logic_error",
-                    "message": f"{scan_unit.unit_id} analiz edilirken hata oluştu: {exc}",
-                    "suggestion": "Workflow loglarını kontrol edin ve full scan'i tekrar çalıştırın.",
-                    "source": "full_repo_scan",
+                    "unit": scan_unit,
+                    "summary": result["summary"],
+                    "findings": result["findings"],
                 }
             )
 
+    if first_pass_failed:
+        time.sleep(FULL_SCAN_SECOND_PASS_WAIT_SECONDS)
+
+    for failed_item in first_pass_failed:
+        scan_unit = failed_item["unit"]
+
+        result = _analyze_full_scan_unit(
+            scan_unit,
+            client=client,
+            model=model,
+            max_review_lines=max_review_lines,
+            retries=retries,
+            retry_delay=retry_delay,
+        )
+
+        if result["success"]:
+            second_pass_success += 1
+            all_findings.extend(result["findings"])
+        else:
+            second_pass_failed.append(
+                {
+                    "unit": scan_unit,
+                    "summary": result["summary"],
+                    "findings": result["findings"],
+                }
+            )
+
+    fallback_units = []
+
+    for failed_item in second_pass_failed:
+        fallback_units.extend(
+            _split_unit_for_fallback(failed_item["unit"])
+        )
+
+    if fallback_units:
+        time.sleep(FULL_SCAN_SPLIT_PASS_WAIT_SECONDS)
+
+    fallback_failed_units = []
+
+    for fallback_unit in fallback_units:
+        result = _analyze_full_scan_unit(
+            fallback_unit,
+            client=client,
+            model=model,
+            max_review_lines=max_review_lines,
+            retries=retries,
+            retry_delay=retry_delay,
+        )
+
+        if result["success"]:
+            fallback_pass_success += 1
+            all_findings.extend(result["findings"])
+        else:
+            fallback_failed_units.append(
+                {
+                    "unit": fallback_unit,
+                    "summary": result["summary"],
+                    "findings": result["findings"],
+                }
+            )
+
+    for failed_item in fallback_failed_units:
+        scan_unit = failed_item["unit"]
+        affected_files = _affected_files_for_unit(scan_unit)
+
+        final_failed.append(scan_unit)
+
+        all_findings.append(
+            {
+                "file": affected_files,
+                "line": 1,
+                "severity": "medium",
+                "category": "logic_error",
+                "message": (
+                    f"{scan_unit.unit_id} AI analizi birkaç otomatik denemeye "
+                    "rağmen tamamlanamadı."
+                ),
+                "suggestion": (
+                    "Bu durum koddan çok AI sağlayıcı yoğunluğu veya geçici servis "
+                    "hatası kaynaklı olabilir. Workflow loglarını kontrol edin."
+                ),
+                "source": "full_repo_ai_scan",
+            }
+        )
+
     skipped_count = max(0, len(reviewable_files) - len(selected_files))
+
+    all_findings = _deduplicate_findings(all_findings)
+
+    total_successful_units = (
+        first_pass_success
+        + second_pass_success
+        + fallback_pass_success
+    )
 
     summary = (
         f"Full repo adaptive scan tamamlandı. "
         f"{len(selected_files)} dosya seçildi, "
         f"{len(scan_plan)} otomatik analiz birimi oluşturuldu. "
-        f"{successful_units} birim başarıyla AI tarafından incelendi, "
-        f"{failed_units} birim başarısız oldu."
+        f"{first_pass_success} birim ilk denemede, "
+        f"{second_pass_success} birim ikinci denemede, "
+        f"{fallback_pass_success} birim küçük parçalara bölündükten sonra "
+        f"AI tarafından incelendi. "
+        f"{len(final_failed)} birim birkaç otomatik denemeye rağmen başarısız oldu."
     )
 
     if skipped_count:
@@ -663,8 +720,14 @@ def analyze_full_repository(
         "full_scan_stats": {
             "selected_files": len(selected_files),
             "planned_units": len(scan_plan),
-            "successful_units": successful_units,
-            "failed_units": failed_units,
+            "first_pass_success": first_pass_success,
+            "first_pass_failed": len(first_pass_failed),
+            "second_pass_success": second_pass_success,
+            "second_pass_failed": len(second_pass_failed),
+            "fallback_units": len(fallback_units),
+            "fallback_pass_success": fallback_pass_success,
+            "final_failed_units": len(final_failed),
+            "total_successful_units": total_successful_units,
             "skipped_files": skipped_count,
         },
     }
