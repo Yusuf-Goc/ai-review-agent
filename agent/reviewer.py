@@ -1,3 +1,4 @@
+import time
 from copy import deepcopy
 
 from agent.config import (
@@ -18,7 +19,12 @@ from agent.llm_client import (
     is_transient_model_error,
     normalize_json_response,
 )
-from agent.full_scan_planner import build_full_scan_plan
+from agent.full_scan_planner import (
+    FullScanSlice,
+    FullScanUnit,
+    build_full_scan_plan,
+    calculate_risk_score,
+)
 from agent.payload_builder import attach_static_findings, build_code_payload
 from agent.repo_scanner import find_reviewable_repo_files
 from agent.review_batcher import filter_reviewable_files, make_review_batches
