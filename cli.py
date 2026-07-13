@@ -74,6 +74,29 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.github_full_scan:
+        review_result = analyze_full_repository(
+            root_dir=".",
+            model=args.model,
+            max_review_lines=args.max_review_lines,
+            retries=args.retries,
+            retry_delay=args.retry_delay,
+        )
+
+        print("[AI Full Repository Review Sonuc Raporu]")
+        print("-" * 50)
+        print(format_review_report(review_result))
+        print("-" * 50)
+
+        try:
+            post_full_scan_result_as_issue(review_result)
+            print("GitHub issue basariyla olusturuldu.")
+        except GitHubReporterError as exc:
+            print(f"Hata: {exc}", file=sys.stderr)
+            return 1
+
+        return 0
+
     if (args.base and not args.head) or (args.head and not args.base):
         print("Hata: --base ve --head birlikte kullanilmalidir.", file=sys.stderr)
         return 2
