@@ -145,3 +145,71 @@ def post_review_result_to_pr(
 
     body = format_github_markdown_report(review_result)
     post_pr_comment(repo=repo, pr_number=pr_number, body=body, token=token)
+
+
+def create_github_issue(repo: str, title: str, body: str, token: str) -> None:
+    if not repo:
+        raise GitHubReporterError("GitHub repo bilgisi boş olamaz.")
+
+    if not title:
+        raise GitHubReporterError("Issue başlığı boş olamaz.")
+
+    if not token:
+        raise GitHubReporterError("GitHub token boş olamaz.")
+
+    url = f"https://api.github.com/repos/{repo}/issues"
+
+    payload = json.dumps(
+        {
+            "title": title,
+            "body": _shorten_text(body),
+            "labels": ["ai-review", "full-repo-scan"],
+        }
+    ).encode("utf-8")
+
+    request = urllib.request.Request(
+        url=url,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            if response.status not in {200, 201}:
+                raise GitHubReporterError(
+                    f"GitHub issue oluşturma isteği başarısız oldu. Status: {response.status}"
+                )
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        raise GitHubReporterError(
+            f"GitHub issue oluşturulamadı. HTTP {exc.code}: {error_body}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise GitHubReporterError(
+            f"GitHub issue oluşturulamadı: {exc}"
+        ) from exc
+
+
+def post_full_scan_result_as_issue(
+    review_result: dict,
+    repo: str | None = None,
+    token: str | None = None,
+) -> None:
+    repo = repo or os.getenv("GITHUB_REPOSITORY")
+    token = token or os.getenv("GITHUB_TOKEN")
+
+    body = format_github_markdown_report(review_result)
+    title = "AI Full Repository Review"
+
+    create_github_issue(
+        repo=repo,
+        title=title,
+        body=body,
+        token=token,
+    )
