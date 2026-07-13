@@ -24,6 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: target-repo
 
       - name: Checkout AI review agent
         uses: actions/checkout@v4
@@ -44,6 +45,7 @@ jobs:
 
       - name: Run PR AI review
         if: ${{ inputs.scan_mode == 'pr' }}
+        working-directory: target-repo
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -52,14 +54,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python ai-review-agent/cli.py --github-pr --retries 4 --retry-delay 3
+          python ../ai-review-agent/cli.py --github-pr --retries 4 --retry-delay 3
 
       - name: Run full repository AI review
         if: ${{ inputs.scan_mode == 'full' }}
         timeout-minutes: 60
+        working-directory: target-repo
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          python ai-review-agent/cli.py --github-full-scan --retries 1 --retry-delay 2
+          python ../ai-review-agent/cli.py --github-full-scan --retries 1 --retry-delay 2
