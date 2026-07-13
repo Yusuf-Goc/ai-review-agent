@@ -289,6 +289,231 @@ def _looks_like_model_failure(result: dict) -> bool:
     return any(marker in summary for marker in failure_markers)
 
 
+FULL_SCAN_SECOND_PASS_WAIT_SECONDS = 30
+FULL_SCAN_SPLIT_PASS_WAIT_SECONDS = 15
+
+FALLBACK_CHUNK_LINES = 220
+FALLBACK_CHUNK_CHARS = 12_000
+FALLBACK_CHUNK_OVERLAP_LINES = 10
+
+
+def _affected_files_for_unit(scan_unit) -> str:
+    files = []
+
+    for file_slice in scan_unit.slices:
+        label = file_slice.path
+
+        if file_slice.part_label:
+            label += f" ({file_slice.part_label})"
+
+        files.append(label)
+
+    return ", ".join(files) or scan_unit.unit_id
+
+
+def _deduplicate_findings(findings: list[dict]) -> list[dict]:
+    deduped = []
+    seen = set()
+
+    for finding in findings:
+        key = (
+            finding.get("file"),
+            finding.get("line"),
+            finding.get("severity"),
+            finding.get("category"),
+            finding.get("message"),
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        deduped.append(finding)
+
+    return deduped
+
+
+def _analyze_full_scan_unit(
+    scan_unit,
+    client=None,
+    model=DEFAULT_MODEL,
+    max_review_lines=MAX_REVIEW_LINES,
+    retries=DEFAULT_RETRIES,
+    retry_delay=DEFAULT_RETRY_DELAY,
+):
+    payload = build_full_scan_unit_payload(
+        scan_unit,
+        max_review_lines=max_review_lines,
+    )
+
+    attach_static_findings(payload)
+
+    result = analyze_payload(
+        payload,
+        client=client,
+        model=model,
+        retries=retries,
+        retry_delay=retry_delay,
+    )
+
+    if _looks_like_model_failure(result):
+        return {
+            "success": False,
+            "findings": result.get("findings", []),
+            "summary": result.get("summary", "Model hatası"),
+        }
+
+    return {
+        "success": True,
+        "findings": result.get("findings", []),
+        "summary": result.get("summary", "İnceleme tamamlandı."),
+    }
+
+
+def _split_slice_for_fallback(file_slice: FullScanSlice) -> list[FullScanSlice]:
+    lines = file_slice.content.splitlines()
+
+    if len(lines) <= FALLBACK_CHUNK_LINES and file_slice.char_count <= FALLBACK_CHUNK_CHARS:
+        return [file_slice]
+
+    chunks = []
+    current_lines = []
+    current_chars = 0
+    current_start_line = file_slice.start_line
+    part_index = 1
+
+    for offset, line in enumerate(lines):
+        real_line_number = file_slice.start_line + offset
+
+        line_too_large = len(line) > FALLBACK_CHUNK_CHARS
+
+        if line_too_large:
+            if current_lines:
+                end_line = current_start_line + len(current_lines) - 1
+                content = "\n".join(current_lines)
+
+                chunks.append(
+                    FullScanSlice(
+                        path=file_slice.path,
+                        language=file_slice.language,
+                        start_line=current_start_line,
+                        end_line=end_line,
+                        content=content,
+                        line_count=len(current_lines),
+                        char_count=len(content),
+                        part_label=f"{file_slice.part_label}-fallback-{part_index}",
+                    )
+                )
+
+                part_index += 1
+                current_lines = []
+                current_chars = 0
+
+            char_start = 0
+            char_part = 1
+
+            while char_start < len(line):
+                char_end = min(char_start + FALLBACK_CHUNK_CHARS, len(line))
+                content = line[char_start:char_end]
+
+                chunks.append(
+                    FullScanSlice(
+                        path=file_slice.path,
+                        language=file_slice.language,
+                        start_line=real_line_number,
+                        end_line=real_line_number,
+                        content=content,
+                        line_count=1,
+                        char_count=len(content),
+                        part_label=(
+                            f"{file_slice.part_label}-line-{real_line_number}-"
+                            f"chars-{char_start + 1}-{char_end}-fallback-{char_part}"
+                        ),
+                    )
+                )
+
+                char_start = char_end
+                char_part += 1
+
+            current_start_line = real_line_number + 1
+            continue
+
+        would_exceed_lines = len(current_lines) >= FALLBACK_CHUNK_LINES
+        would_exceed_chars = current_chars + len(line) + 1 > FALLBACK_CHUNK_CHARS
+
+        if current_lines and (would_exceed_lines or would_exceed_chars):
+            end_line = current_start_line + len(current_lines) - 1
+            content = "\n".join(current_lines)
+
+            chunks.append(
+                FullScanSlice(
+                    path=file_slice.path,
+                    language=file_slice.language,
+                    start_line=current_start_line,
+                    end_line=end_line,
+                    content=content,
+                    line_count=len(current_lines),
+                    char_count=len(content),
+                    part_label=f"{file_slice.part_label}-fallback-{part_index}",
+                )
+            )
+
+            part_index += 1
+
+            overlap_start = max(0, len(current_lines) - FALLBACK_CHUNK_OVERLAP_LINES)
+            overlap_lines = current_lines[overlap_start:]
+
+            current_start_line = end_line - len(overlap_lines) + 1
+            current_lines = overlap_lines[:]
+            current_chars = sum(len(item) + 1 for item in current_lines)
+
+        current_lines.append(line)
+        current_chars += len(line) + 1
+
+    if current_lines:
+        end_line = current_start_line + len(current_lines) - 1
+        content = "\n".join(current_lines)
+
+        chunks.append(
+            FullScanSlice(
+                path=file_slice.path,
+                language=file_slice.language,
+                start_line=current_start_line,
+                end_line=end_line,
+                content=content,
+                line_count=len(current_lines),
+                char_count=len(content),
+                part_label=f"{file_slice.part_label}-fallback-{part_index}",
+            )
+        )
+
+    return chunks
+
+
+def _split_unit_for_fallback(scan_unit) -> list[FullScanUnit]:
+    fallback_units = []
+
+    for file_slice in scan_unit.slices:
+        fallback_slices = _split_slice_for_fallback(file_slice)
+
+        for index, fallback_slice in enumerate(fallback_slices, start=1):
+            fallback_units.append(
+                FullScanUnit(
+                    unit_id=f"{scan_unit.unit_id}-fallback-{index}",
+                    kind="fallback_chunk",
+                    slices=[fallback_slice],
+                    total_lines=fallback_slice.line_count,
+                    total_chars=fallback_slice.char_count,
+                    risk_score=calculate_risk_score(
+                        fallback_slice.path,
+                        fallback_slice.content,
+                    ),
+                )
+            )
+
+    return fallback_units
+
+
 def analyze_full_repository(
     root_dir=".",
     client=None,
