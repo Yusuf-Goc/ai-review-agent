@@ -265,6 +265,24 @@ def build_full_scan_unit_payload(scan_unit, max_review_lines=MAX_REVIEW_LINES):
     }
 
 
+def _looks_like_model_failure(result: dict) -> bool:
+    summary = result.get("summary", "").lower()
+
+    failure_markers = [
+        "gemini modeli gecici",
+        "model cagrisi basarisiz",
+        "yapay zekadan bos",
+        "model gecerli json donmedi",
+        "503",
+        "429",
+        "unavailable",
+        "resource_exhausted",
+        "rate limit",
+    ]
+
+    return any(marker in summary for marker in failure_markers)
+
+
 def analyze_full_repository(
     root_dir=".",
     client=None,
@@ -272,7 +290,7 @@ def analyze_full_repository(
     max_review_lines=MAX_REVIEW_LINES,
     retries=DEFAULT_RETRIES,
     retry_delay=DEFAULT_RETRY_DELAY,
-    max_files=80,
+    max_files=200,
 ):
     reviewable_files = find_reviewable_repo_files(root_dir=root_dir)
 
@@ -284,18 +302,49 @@ def analyze_full_repository(
 
     selected_files = reviewable_files[:max_files]
 
-    all_findings = []
-    summaries = []
+    file_items = []
 
-    for index, file_info in enumerate(selected_files, start=1):
+    for file_info in selected_files:
         try:
             with open(file_info.path, "r", encoding="utf-8") as source_file:
-                source_text = source_file.read()
+                content = source_file.read()
 
-            payload = build_code_payload(
-                source_text,
-                file_name=file_info.path,
-                language=file_info.language,
+            file_items.append(
+                {
+                    "path": file_info.path,
+                    "language": file_info.language,
+                    "line_count": file_info.line_count,
+                    "content": content,
+                }
+            )
+        except UnicodeDecodeError:
+            continue
+        except Exception as exc:
+            file_items.append(
+                {
+                    "path": file_info.path,
+                    "language": file_info.language,
+                    "line_count": 0,
+                    "content": "",
+                    "read_error": str(exc),
+                }
+            )
+
+    readable_file_items = [
+        item for item in file_items
+        if not item.get("read_error")
+    ]
+
+    scan_plan = build_full_scan_plan(readable_file_items)
+
+    all_findings = []
+    successful_units = 0
+    failed_units = 0
+
+    for unit_index, scan_unit in enumerate(scan_plan, start=1):
+        try:
+            payload = build_full_scan_unit_payload(
+                scan_unit,
                 max_review_lines=max_review_lines,
             )
 
@@ -309,21 +358,52 @@ def analyze_full_repository(
                 retry_delay=retry_delay,
             )
 
-            summaries.append(
-                f"{index}/{len(selected_files)} {file_info.path}: "
-                f"{result.get('summary', 'Özet yok')}"
-            )
+            if _looks_like_model_failure(result):
+                failed_units += 1
+
+                affected_files = ", ".join(
+                    file_slice.path for file_slice in scan_unit.slices
+                )
+
+                all_findings.append(
+                    {
+                        "file": affected_files or scan_unit.unit_id,
+                        "line": 1,
+                        "severity": "medium",
+                        "category": "logic_error",
+                        "message": (
+                            f"{scan_unit.unit_id} AI analizi geçici model hatası "
+                            "nedeniyle tamamlanamadı."
+                        ),
+                        "suggestion": (
+                            "Gemini yoğunluğu azaldığında full scan workflow'unu "
+                            "tekrar çalıştırın. Bu parça raporda başarısız olarak işaretlendi."
+                        ),
+                        "source": "full_repo_ai_scan",
+                    }
+                )
+
+                all_findings.extend(result.get("findings", []))
+                continue
+
+            successful_units += 1
             all_findings.extend(result.get("findings", []))
 
         except Exception as exc:
+            failed_units += 1
+
+            affected_files = ", ".join(
+                file_slice.path for file_slice in scan_unit.slices
+            )
+
             all_findings.append(
                 {
-                    "file": file_info.path,
+                    "file": affected_files or scan_unit.unit_id,
                     "line": 1,
                     "severity": "medium",
                     "category": "logic_error",
-                    "message": f"Dosya analiz edilemedi: {exc}",
-                    "suggestion": "Dosya encoding, izin veya format bilgisini kontrol edin.",
+                    "message": f"{scan_unit.unit_id} analiz edilirken hata oluştu: {exc}",
+                    "suggestion": "Workflow loglarını kontrol edin ve full scan'i tekrar çalıştırın.",
                     "source": "full_repo_scan",
                 }
             )
@@ -331,19 +411,31 @@ def analyze_full_repository(
     skipped_count = max(0, len(reviewable_files) - len(selected_files))
 
     summary = (
-        f"Full repo scan tamamlandı. "
-        f"{len(selected_files)} dosya incelendi."
+        f"Full repo adaptive scan tamamlandı. "
+        f"{len(selected_files)} dosya seçildi, "
+        f"{len(scan_plan)} otomatik analiz birimi oluşturuldu. "
+        f"{successful_units} birim başarıyla AI tarafından incelendi, "
+        f"{failed_units} birim başarısız oldu."
     )
 
     if skipped_count:
-        summary += (
-            f" Limit nedeniyle {skipped_count} dosya atlandı. "
-            f"max_files değerini artırabilirsiniz."
-        )
+        summary += f" Limit nedeniyle {skipped_count} dosya atlandı."
+
+    if not all_findings:
+        summary += " Kritik bulgu bulunamadı."
+    else:
+        summary += f" Toplam {len(all_findings)} bulgu üretildi."
 
     return {
         "summary": summary,
         "findings": all_findings,
+        "full_scan_stats": {
+            "selected_files": len(selected_files),
+            "planned_units": len(scan_plan),
+            "successful_units": successful_units,
+            "failed_units": failed_units,
+            "skipped_files": skipped_count,
+        },
     }
 
 
