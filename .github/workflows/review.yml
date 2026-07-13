@@ -54,7 +54,7 @@ jobs:
         run: |
           python ai-review-agent/cli.py --github-pr --retries 4 --retry-delay 3
 
-            - name: Run full repository AI review
+      - name: Run full repository AI review
         if: ${{ inputs.scan_mode == 'full' }}
         timeout-minutes: 60
         env:
