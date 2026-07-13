@@ -6,10 +6,14 @@ import sys
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
 from agent.git_diff import GitDiffError, get_git_diff
-from agent.github_reporter import GitHubReporterError, post_review_result_to_pr
+from agent.github_reporter import (
+    GitHubReporterError,
+    post_full_scan_result_as_issue,
+    post_review_result_to_pr,
+)
 from agent.payload_builder import attach_static_findings, build_code_payload
 from agent.report_formatter import format_review_report
-from agent.reviewer import analyze_diff_in_batches, analyze_source_code
+from agent.reviewer import analyze_diff_in_batches, analyze_full_repository, analyze_source_code
 
 
 def read_from_stdin():
