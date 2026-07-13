@@ -2,6 +2,10 @@ name: Reusable AI Code Review
 
 on:
   workflow_call:
+    inputs:
+      scan_mode:
+        required: true
+        type: string
     secrets:
       GEMINI_API_KEY:
         required: true
@@ -38,7 +42,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r ai-review-agent/requirements.txt
 
-      - name: Run AI review
+      - name: Run PR AI review
+        if: ${{ inputs.scan_mode == 'pr' }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -48,3 +53,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python ai-review-agent/cli.py --github-pr --retries 4 --retry-delay 3
+
+      - name: Run full repository AI review
+        if: ${{ inputs.scan_mode == 'full' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python ai-review-agent/cli.py --github-full-scan --retries 4 --retry-delay 3
