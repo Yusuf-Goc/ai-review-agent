@@ -18,6 +18,7 @@ SKIP_DIRS = {
     "dist",
     "build",
     "coverage",
+    "ai-review-agent",
 }
 
 SKIP_FILE_SUFFIXES = {
