@@ -40,6 +40,11 @@ def main():
         action="store_true",
         help="GitHub Actions pull request modunda calistir",
     )
+    input_group.add_argument(
+        "--github-full-scan",
+        action="store_true",
+        help="GitHub Actions ortaminda tum repo kodlarini analiz eder ve issue olusturur",
+    )
     parser.add_argument("--base", help="Karsilastirma icin base commit/ref")
     parser.add_argument("--head", help="Karsilastirma icin head commit/ref")
     parser.add_argument("--language", help="Kod dili. Verilmezse dosya uzantisindan tahmin edilir")
