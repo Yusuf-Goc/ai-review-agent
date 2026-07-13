@@ -19,6 +19,7 @@ from agent.llm_client import (
     normalize_json_response,
 )
 from agent.payload_builder import attach_static_findings, build_code_payload
+from agent.repo_scanner import find_reviewable_repo_files
 from agent.review_batcher import filter_reviewable_files, make_review_batches
 
 
@@ -177,6 +178,88 @@ def analyze_diff_in_batches(
             f"{len(reviewable_files)} dosya {len(batches)} batch halinde incelendi. "
             + " ".join(summaries)
         ),
+        "findings": all_findings,
+    }
+
+
+def analyze_full_repository(
+    root_dir=".",
+    client=None,
+    model=DEFAULT_MODEL,
+    max_review_lines=MAX_REVIEW_LINES,
+    retries=DEFAULT_RETRIES,
+    retry_delay=DEFAULT_RETRY_DELAY,
+    max_files=80,
+):
+    reviewable_files = find_reviewable_repo_files(root_dir=root_dir)
+
+    if not reviewable_files:
+        return {
+            "summary": "Repo içinde incelenebilir Python, SQL veya Go dosyası bulunamadı.",
+            "findings": [],
+        }
+
+    selected_files = reviewable_files[:max_files]
+
+    all_findings = []
+    summaries = []
+
+    for index, file_info in enumerate(selected_files, start=1):
+        try:
+            with open(file_info.path, "r", encoding="utf-8") as source_file:
+                source_text = source_file.read()
+
+            payload = build_code_payload(
+                source_text,
+                file_name=file_info.path,
+                language=file_info.language,
+                max_review_lines=max_review_lines,
+            )
+
+            attach_static_findings(payload)
+
+            result = analyze_payload(
+                payload,
+                client=client,
+                model=model,
+                retries=retries,
+                retry_delay=retry_delay,
+            )
+
+            summaries.append(
+                f"{index}/{len(selected_files)} {file_info.path}: "
+                f"{result.get('summary', 'Özet yok')}"
+            )
+            all_findings.extend(result.get("findings", []))
+
+        except Exception as exc:
+            all_findings.append(
+                {
+                    "file": file_info.path,
+                    "line": 1,
+                    "severity": "medium",
+                    "category": "logic_error",
+                    "message": f"Dosya analiz edilemedi: {exc}",
+                    "suggestion": "Dosya encoding, izin veya format bilgisini kontrol edin.",
+                    "source": "full_repo_scan",
+                }
+            )
+
+    skipped_count = max(0, len(reviewable_files) - len(selected_files))
+
+    summary = (
+        f"Full repo scan tamamlandı. "
+        f"{len(selected_files)} dosya incelendi."
+    )
+
+    if skipped_count:
+        summary += (
+            f" Limit nedeniyle {skipped_count} dosya atlandı. "
+            f"max_files değerini artırabilirsiniz."
+        )
+
+    return {
+        "summary": summary,
         "findings": all_findings,
     }
 
