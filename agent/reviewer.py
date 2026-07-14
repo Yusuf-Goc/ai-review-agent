@@ -141,8 +141,12 @@ def analyze_diff_in_batches(
     max_review_lines=MAX_REVIEW_LINES,
     retries=DEFAULT_RETRIES,
     retry_delay=DEFAULT_RETRY_DELAY,
+    main_branch_file_context=None,
 ):
     base_payload = parse_diff(diff_text, max_review_lines=max_review_lines)
+
+    if main_branch_file_context:
+        base_payload["main_branch_file_context"] = main_branch_file_context
 
     reviewable_files = filter_reviewable_files(base_payload.get("files", []))
 
@@ -166,6 +170,18 @@ def analyze_diff_in_batches(
             "file_count": len(batch.files),
             "estimated_lines": batch.estimated_lines,
         }
+
+        if main_branch_file_context:
+            batch_paths = {
+                file_payload.get("path")
+                for file_payload in batch.files
+            }
+
+            batch_payload["main_branch_file_context"] = {
+                path: context
+                for path, context in main_branch_file_context.items()
+                if path in batch_paths
+            }
 
         result = analyze_payload(
             batch_payload,

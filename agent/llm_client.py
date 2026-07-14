@@ -44,6 +44,10 @@ Inceleme kurallari:
 9. Cevaptaki tum aciklama metinlerini her zaman Turkce yaz. `summary`, `message`
    ve `suggestion` alanlari kesinlikle Ingilizce olmamalidir. Kod, dosya yolu,
    kategori ve teknik anahtar kelimeler aynen kalabilir.
+10. JSON içinde `main_branch_file_context` varsa bu bilgi main branch'teki dosyanın
+    daha önce çıkarılmış özetidir. PR diff'ini bu bağlamı dikkate alarak yorumla.
+    Ancak diff modunda yalnızca PR değişikliğinden kaynaklanan yeni riskleri raporla;
+    eski kodu bağımsız bulgu olarak raporlama.
 
 Beklenen JSON semasi:
 {{
@@ -154,4 +158,3 @@ def call_model_with_retries(
             sleep_func(wait_seconds)
 
     raise last_error
-
