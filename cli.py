@@ -3,6 +3,7 @@ import json
 import os
 import sys
 
+from agent.codebase_documenter import generate_codebase_documentation
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
 from agent.git_diff import GitDiffError, get_git_diff
@@ -45,6 +46,11 @@ def main():
         action="store_true",
         help="GitHub Actions ortaminda tum repo kodlarini analiz eder ve issue olusturur",
     )
+    input_group.add_argument(
+        "--github-codebase-docs",
+        action="store_true",
+        help="GitHub Actions ortamında codebase dokümantasyonu üretir",
+    )
     parser.add_argument("--base", help="Karsilastirma icin base commit/ref")
     parser.add_argument("--head", help="Karsilastirma icin head commit/ref")
     parser.add_argument("--language", help="Kod dili. Verilmezse dosya uzantisindan tahmin edilir")
@@ -73,6 +79,34 @@ def main():
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
+
+    if args.github_codebase_docs:
+        try:
+            summary = generate_codebase_documentation(
+                root_dir=".",
+                repository=os.getenv("GITHUB_REPOSITORY", ""),
+                model=args.model,
+                retries=args.retries,
+                retry_delay=args.retry_delay,
+                output_json=".ai-review/codebase-summary.json",
+                output_markdown="docs/ai-codebase-report.md",
+            )
+
+            print("[AI Codebase Documentation Sonuc Raporu]")
+            print("-" * 50)
+            print(
+                f"{summary.get('stats', {}).get('documented_files', 0)} dosya dokümante edildi. "
+                f"{summary.get('stats', {}).get('failed_units', 0)} analiz birimi başarısız oldu."
+            )
+            print("Çıktılar:")
+            print("- .ai-review/codebase-summary.json")
+            print("- docs/ai-codebase-report.md")
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(f"Hata: Codebase dokümantasyonu üretilemedi: {exc}", file=sys.stderr)
+            return 1
 
     if args.github_full_scan:
         review_result = analyze_full_repository(
