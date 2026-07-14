@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
 
@@ -66,3 +66,30 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python ../ai-review-agent/cli.py --github-full-scan --retries 1 --retry-delay 2
+
+      - name: Run codebase documentation scan
+        if: ${{ inputs.scan_mode == 'docs' }}
+        timeout-minutes: 60
+        working-directory: target-repo
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python ../ai-review-agent/cli.py --github-codebase-docs --retries 1 --retry-delay 2
+
+      - name: Commit codebase documentation
+        if: ${{ inputs.scan_mode == 'docs' }}
+        working-directory: target-repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .ai-review/codebase-summary.json docs/ai-codebase-report.md
+
+          if git diff --cached --quiet; then
+            echo "Codebase documentation has no changes."
+          else
+            git commit -m "Update AI codebase documentation"
+            git push
+          fi
