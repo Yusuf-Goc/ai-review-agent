@@ -2,9 +2,13 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 from agent.codebase_documenter import generate_codebase_documentation
-from agent.docs_commands import prepare_codebase_docs_bundle
+from agent.docs_commands import (
+    merge_codebase_docs_bundle,
+    prepare_codebase_docs_bundle,
+)
 from agent.docs_worker import run_docs_worker
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
@@ -70,6 +74,14 @@ def main():
             "payload'ını işler"
         ),
     )
+    input_group.add_argument(
+        "--merge-codebase-docs-shards",
+        action="store_true",
+        help=(
+            "Documentation shard worker sonuçlarını "
+            "birleştirip nihai raporları üretir"
+        ),
+    )
     parser.add_argument("--base", help="Karsilastirma icin base commit/ref")
     parser.add_argument("--head", help="Karsilastirma icin head commit/ref")
     parser.add_argument("--language", help="Kod dili. Verilmezse dosya uzantisindan tahmin edilir")
@@ -108,12 +120,86 @@ def main():
         help="Worker sonucunun yazılacağı JSON dosyası",
     )
     parser.add_argument(
+        "--docs-bundle-dir",
+        default=".ai-review/docs-execution",
+        help=(
+            "Prepare aşamasında üretilen documentation "
+            "bundle klasörü"
+        ),
+    )
+    parser.add_argument(
+        "--docs-results-dir",
+        default=".ai-review/docs-results",
+        help=(
+            "İndirilen shard worker sonuçlarının "
+            "bulunduğu ana klasör"
+        ),
+    )
+    parser.add_argument(
         "--max-review-lines",
         type=int,
         default=MAX_REVIEW_LINES,
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
+
+    if args.merge_codebase_docs_shards:
+        results_directory = Path(args.docs_results_dir)
+
+        if not results_directory.is_dir():
+            print(
+                "Hata: Documentation worker sonuç klasörü "
+                f"bulunamadı: {args.docs_results_dir}",
+                file=sys.stderr,
+            )
+            return 2
+
+        result_paths = sorted(
+            str(result_path)
+            for result_path in results_directory.rglob("*.json")
+            if result_path.is_file()
+        )
+
+        if not result_paths:
+            print(
+                "Hata: Documentation worker sonuç JSON "
+                "dosyası bulunamadı.",
+                file=sys.stderr,
+            )
+            return 2
+
+        try:
+            summary = merge_codebase_docs_bundle(
+                root_dir=".",
+                bundle_dir=args.docs_bundle_dir,
+                result_paths=result_paths,
+                repository=os.getenv("GITHUB_REPOSITORY", ""),
+                output_json=".ai-review/codebase-summary.json",
+                output_markdown="docs/ai-codebase-report.md",
+                max_files=None,
+            )
+
+            print("[AI Codebase Documentation Shard Merge]")
+            print("-" * 50)
+            print(
+                f"{summary.get('stats', {}).get('documented_files', 0)} "
+                "dosya dokümante edildi, "
+                f"{summary.get('stats', {}).get('failed_units', 0)} "
+                "analiz birimi başarısız oldu."
+            )
+            print("Çıktılar:")
+            print("- .ai-review/codebase-summary.json")
+            print("- docs/ai-codebase-report.md")
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Codebase documentation shard "
+                f"sonuçları birleştirilemedi: {exc}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.run_codebase_docs_shard:
         if not args.docs_payload_file or not args.docs_result_file:

@@ -1,5 +1,6 @@
 import sys
 import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -165,6 +166,87 @@ class CliDocsModesTests(unittest.TestCase):
                 model="test-model",
                 retries=0,
                 retry_delay=0.0,
+            )
+
+
+    def test_merge_mode_finalizes_downloaded_worker_results(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle_dir = f"{temp_dir}/bundle"
+            results_dir = f"{temp_dir}/results"
+
+            Path(bundle_dir).mkdir(parents=True)
+            Path(results_dir, "worker-002").mkdir(parents=True)
+            Path(results_dir, "worker-001").mkdir(parents=True)
+
+            first_result = Path(
+                results_dir,
+                "worker-001",
+                "docs-shard-001.json",
+            )
+            second_result = Path(
+                results_dir,
+                "worker-002",
+                "docs-shard-002.json",
+            )
+
+            first_result.write_text("{}", encoding="utf-8")
+            second_result.write_text("{}", encoding="utf-8")
+
+            expected_summary = {
+                "stats": {
+                    "documented_files": 12,
+                    "failed_units": 1,
+                }
+            }
+
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "cli.py",
+                        "--merge-codebase-docs-shards",
+                        "--docs-bundle-dir",
+                        bundle_dir,
+                        "--docs-results-dir",
+                        results_dir,
+                    ],
+                ),
+                patch.dict(
+                    "os.environ",
+                    {
+                        "GITHUB_REPOSITORY": (
+                            "example/repository"
+                        ),
+                    },
+                    clear=False,
+                ),
+                patch(
+                    "cli.merge_codebase_docs_bundle",
+                    return_value=expected_summary,
+                    create=True,
+                ) as merge_bundle,
+                patch("builtins.print"),
+            ):
+                exit_code = cli.main()
+
+            self.assertEqual(exit_code, 0)
+
+            merge_bundle.assert_called_once_with(
+                root_dir=".",
+                bundle_dir=bundle_dir,
+                result_paths=[
+                    str(first_result),
+                    str(second_result),
+                ],
+                repository="example/repository",
+                output_json=(
+                    ".ai-review/codebase-summary.json"
+                ),
+                output_markdown=(
+                    "docs/ai-codebase-report.md"
+                ),
+                max_files=None,
             )
 
 
