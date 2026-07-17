@@ -4,9 +4,10 @@ Bu proje, Git diff verisini analiz ederek kritik syntax hatasi, mantik hatasi,
 guvenlik riski, kaynak/bellek sizintisi ve geriye donuk uyumluluk sorunlarini
 raporlamayi hedefleyen bir yapay zeka kod inceleme ajanidir.
 
-Su anki surum GitHub/GitLab entegrasyonu yerine agent cekirdegine odaklanir:
-unified diff metnini parse eder, dosya/hunk/satir baglamini korur ve Gemini'ye
-semali JSON review istegi gonderir.
+Agent; yerel CLI kullanimini, GitHub Actions uzerinden PR ve full repository
+incelemesini ve artimli codebase dokumantasyonu uretimini destekler. Unified diff
+metnini parse eder, dosya/hunk/satir baglamini korur ve Gemini'ye semali JSON
+review istegi gonderir.
 
 ## Altyapi ve Bagimliliklar
 
@@ -70,6 +71,68 @@ Stdin uzerinden ham kod inceleme:
 ```bash
 cat query.sql | python3 cli.py --language sql
 ```
+
+## GitHub Actions ve Codebase Dokumantasyonu
+
+Repository entegrasyonu iki reusable workflow ile saglanir:
+
+- `.github/workflows/review.yml`: PR, full repository ve documentation modlarini
+  yonetir.
+- `.github/workflows/docs.yml`: Artimli codebase dokumantasyonu taramasini
+  calistirir.
+
+`review.yml` icinde `scan_mode: docs` secildiginde islem dogrudan `docs.yml`
+workflow'una aktarilir.
+
+### Kucuk repository akisi
+
+Kucuk repository icin basit tek-job akisi korunur. Agent mevcut
+`--github-codebase-docs` komutunu calistirir ve dokumantasyon ciktilarini tek
+islemde uretir.
+
+### Buyuk repository akisi
+
+Buyuk repository icin akis su sekildedir:
+
+```text
+prepare -> matrix workers -> merge
+```
+
+Prepare asamasi repository'yi bir kez tarar, degisen dosyalar icin deterministik
+scan unit'leri olusturur ve bunlari shard payload'larina ayirir. Matrix worker'lar
+her shard'i bagimsiz olarak analiz eder. Merge asamasi worker sonuclarini
+dogrular, birlestirir ve merkezi index ile raporlari gunceller.
+
+Varsayilan shard hedefleri:
+
+- En fazla yaklasik 6.000 satir
+- En fazla yaklasik 300.000 karakter
+- En fazla 24 scan unit
+- En fazla 20 shard
+
+GitHub Actions matrix'i ayni anda en fazla `max-parallel: 8` worker calistirir.
+
+### Uretilen dosyalar
+
+Documentation taramasi asagidaki kalici ciktilari uretir:
+
+- `.ai-review/index.json`: Dosya hash'leri ve artimli tarama index'i
+- `.ai-review/summaries/`: Dosya bazli dokumantasyon ozetleri
+- `.ai-review/codebase-summary.json`: Repository geneli yapilandirilmis ozet
+- `docs/ai-codebase-report.md`: Okunabilir Markdown raporu
+
+### Guvenlik ve tutarlilik kontrolleri
+
+Merge asamasi beklenen worker artifact'lerini manifest ile karsilastirir. Bir
+worker tamamen basarisiz olsa bile merge calisir ve eksik shard durumunu acik bir
+hata olarak raporlar.
+
+Prepare sonrasinda repository icerigi degisirse scan unit kimlikleri manifest ile
+uyusmaz. Bu stale bundle korumasi, eski worker sonuclarinin guncel index'e
+yanlislikla yazilmasini engeller.
+
+Index, shard payload'lari ve worker sonuclari gecici dosya uzerinden atomik olarak
+yazilir. Onceki index ayrica `.ai-review/index.json.bak` ile kurtarilabilir.
 
 ## Test
 
