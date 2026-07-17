@@ -185,23 +185,46 @@ def save_file_summary(
     file_doc: dict[str, Any],
     summary_dir: str = ".ai-review/summaries",
 ) -> str:
-    """Dosya dokümantasyonunu ayrı bir JSON dosyasına kaydeder."""
+    """Dosya dokümantasyonunu atomic biçimde ayrı JSON dosyasına kaydeder."""
     output_path = summary_path_for_file(
         path=path,
         summary_dir=summary_dir,
     )
 
     parent_directory = os.path.dirname(output_path)
+    target_directory = parent_directory or "."
+
     if parent_directory:
         os.makedirs(parent_directory, exist_ok=True)
 
-    with open(output_path, "w", encoding="utf-8") as summary_file:
-        json.dump(
-            file_doc,
-            summary_file,
-            ensure_ascii=False,
-            indent=2,
-        )
+    temporary_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target_directory,
+            prefix=".summary-",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = temporary_file.name
+
+            json.dump(
+                file_doc,
+                temporary_file,
+                ensure_ascii=False,
+                indent=2,
+            )
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+
+        os.replace(temporary_path, output_path)
+        temporary_path = None
+
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.remove(temporary_path)
 
     return output_path
 

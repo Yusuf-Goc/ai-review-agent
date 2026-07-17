@@ -324,6 +324,32 @@ class CodebaseIndexTests(unittest.TestCase):
 
             self.assertEqual(load_all_file_summaries(index), [])
 
+    def test_summary_save_leaves_no_temporary_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_doc = {
+                "path": "src/example.py",
+                "language": "python",
+                "purpose": "Example module",
+            }
+
+            output_path = save_file_summary(
+                path="src/example.py",
+                file_doc=file_doc,
+                summary_dir=temp_dir,
+            )
+
+            remaining_files = os.listdir(temp_dir)
+
+            self.assertEqual(
+                remaining_files,
+                [os.path.basename(output_path)],
+            )
+
+            with open(output_path, "r", encoding="utf-8") as summary_file:
+                loaded = json.load(summary_file)
+
+            self.assertEqual(loaded, file_doc)
+
 
 if __name__ == "__main__":
     unittest.main()
