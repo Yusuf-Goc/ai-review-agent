@@ -2,6 +2,12 @@ name: Reusable AI Codebase Documentation
 
 on:
   workflow_call:
+    inputs:
+      agent_ref:
+        description: "AI review agent branch, tag or commit"
+        required: false
+        type: string
+        default: main
     secrets:
       GEMINI_API_KEY:
         required: true
@@ -31,7 +37,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Yusuf-Goc/ai-review-agent
-          ref: main
+          ref: ${{ inputs.agent_ref }}
           path: ai-review-agent
 
       - name: Set up Python
