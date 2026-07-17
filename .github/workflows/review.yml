@@ -126,6 +126,7 @@ jobs:
 
           git add -A -- \
             .ai-review/index.json \
+            .ai-review/index.json.bak \
             .ai-review/codebase-summary.json \
             docs/ai-codebase-report.md
 
