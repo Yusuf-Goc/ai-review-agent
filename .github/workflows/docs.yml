@@ -6,6 +6,11 @@ on:
       GEMINI_API_KEY:
         required: true
 
+
+concurrency:
+  group: ai-codebase-docs-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   codebase-docs:
     runs-on: ubuntu-latest
