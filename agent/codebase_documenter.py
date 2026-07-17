@@ -721,4 +721,3 @@ def generate_codebase_documentation(
         output_json=output_json,
         output_markdown=output_markdown,
     )
-

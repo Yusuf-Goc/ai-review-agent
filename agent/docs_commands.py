@@ -300,4 +300,3 @@ def merge_codebase_docs_bundle(
         output_json=output_json,
         output_markdown=output_markdown,
     )
-
