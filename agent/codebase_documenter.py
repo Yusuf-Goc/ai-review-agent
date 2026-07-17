@@ -378,6 +378,86 @@ def _ensure_parent_directory(path: str) -> None:
         os.makedirs(parent_directory, exist_ok=True)
 
 
+def process_docs_scan_units(
+    scan_units: list,
+    model: str = DEFAULT_MODEL,
+    retries: int = DEFAULT_RETRIES,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+) -> tuple[dict[str, dict], list[dict[str, str]]]:
+    """
+    Scan unit'lerini Gemini ile işler ve dosya sonuçlarını birleştirir.
+
+    Bu fonksiyon index veya rapor dosyası yazmaz. Böylece hem mevcut sıralı
+    akış hem de matrix worker'ları aynı model/retry davranışını kullanabilir.
+    """
+    merged_files_by_path: dict[str, dict] = {}
+    failed_units: list[dict[str, str]] = []
+
+    for scan_unit in scan_units:
+        prompt = _build_docs_prompt(scan_unit)
+
+        try:
+            response = _call_model_json(
+                prompt=prompt,
+                model=model,
+                retries=retries,
+                retry_delay=retry_delay,
+            )
+
+            response_text = _extract_response_text(response)
+
+            if not response_text:
+                failed_units.append(
+                    {
+                        "unit_id": scan_unit.unit_id,
+                        "reason": "Model boş yanıt döndü.",
+                    }
+                )
+                continue
+
+            parsed = _safe_parse_docs_response(response_text)
+
+            if parsed.get("parse_error"):
+                failed_units.append(
+                    {
+                        "unit_id": scan_unit.unit_id,
+                        "reason": parsed["parse_error"],
+                    }
+                )
+
+            for file_doc in parsed.get("files", []):
+                file_path = file_doc.get("path")
+
+                if not file_path:
+                    continue
+
+                merged_files_by_path[file_path] = _merge_file_doc(
+                    merged_files_by_path.get(file_path, {}),
+                    file_doc,
+                )
+
+        except Exception as exc:
+            failed_units.append(
+                {
+                    "unit_id": scan_unit.unit_id,
+                    "reason": str(exc),
+                }
+            )
+
+            if _is_transient_error(exc):
+                print(
+                    f"{scan_unit.unit_id} geçici model "
+                    f"hatasıyla atlandı: {exc}"
+                )
+            else:
+                print(
+                    f"{scan_unit.unit_id} dokümantasyon "
+                    f"hatasıyla atlandı: {exc}"
+                )
+
+    return merged_files_by_path, failed_units
+
+
 def generate_codebase_documentation(
     root_dir: str = ".",
     repository: str | None = None,
@@ -443,63 +523,12 @@ def generate_codebase_documentation(
 
     scan_plan = build_full_scan_plan(file_items)
 
-    merged_files_by_path: dict[str, dict] = {}
-    failed_units = []
-
-    for scan_unit in scan_plan:
-        prompt = _build_docs_prompt(scan_unit)
-
-        try:
-            response = _call_model_json(
-                prompt=prompt,
-                model=model,
-                retries=retries,
-                retry_delay=retry_delay,
-            )
-
-            response_text = _extract_response_text(response)
-
-            if not response_text:
-                failed_units.append(
-                    {
-                        "unit_id": scan_unit.unit_id,
-                        "reason": "Model boş yanıt döndü.",
-                    }
-                )
-                continue
-
-            parsed = _safe_parse_docs_response(response_text)
-
-            if parsed.get("parse_error"):
-                failed_units.append(
-                    {
-                        "unit_id": scan_unit.unit_id,
-                        "reason": parsed["parse_error"],
-                    }
-                )
-
-            for file_doc in parsed.get("files", []):
-                path = file_doc.get("path")
-                if not path:
-                    continue
-
-                merged_files_by_path[path] = _merge_file_doc(
-                    merged_files_by_path.get(path, {}),
-                    file_doc,
-                )
-
-        except Exception as exc:
-            failed_units.append(
-                {
-                    "unit_id": scan_unit.unit_id,
-                    "reason": str(exc),
-                }
-            )
-
-            if _is_transient_error(exc):
-                print(f"{scan_unit.unit_id} geçici model hatasıyla atlandı: {exc}")
-            else:
-                print(f"{scan_unit.unit_id} dokümantasyon hatasıyla atlandı: {exc}")
+    merged_files_by_path, failed_units = process_docs_scan_units(
+        scan_units=scan_plan,
+        model=model,
+        retries=retries,
+        retry_delay=retry_delay,
+    )
 
     content_by_path = {
         item["path"]: item
