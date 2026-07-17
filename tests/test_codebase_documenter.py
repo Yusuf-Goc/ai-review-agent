@@ -642,5 +642,120 @@ class CodebaseDocumenterTests(unittest.TestCase):
             self.assertEqual(summary["stats"]["skipped_by_limit"], 2)
 
 
+    def test_changed_files_are_selected_before_file_limit_is_applied(self):
+        reviewable_files = [
+            RepositorySourceFile(
+                path="src/unchanged.py",
+                language="python",
+                line_count=1,
+            ),
+            RepositorySourceFile(
+                path="src/changed.py",
+                language="python",
+                line_count=1,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = os.path.join(temp_dir, "src")
+            os.makedirs(source_dir, exist_ok=True)
+
+            with open(
+                os.path.join(source_dir, "unchanged.py"),
+                "w",
+                encoding="utf-8",
+            ) as source_file:
+                source_file.write("print('unchanged')\n")
+
+            with open(
+                os.path.join(source_dir, "changed.py"),
+                "w",
+                encoding="utf-8",
+            ) as source_file:
+                source_file.write("print('changed')\n")
+
+            output_json = os.path.join(
+                temp_dir,
+                ".ai-review",
+                "codebase-summary.json",
+            )
+            output_markdown = os.path.join(
+                temp_dir,
+                "docs",
+                "ai-codebase-report.md",
+            )
+
+            index = {
+                "schema_version": "1.0",
+                "generated_at": "",
+                "files": {},
+            }
+
+            def should_document(_index, path, _content):
+                return path == "src/changed.py"
+
+            with (
+                patch.object(
+                    codebase_documenter,
+                    "find_reviewable_repo_files",
+                    return_value=reviewable_files,
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "load_index",
+                    return_value=index,
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "remove_deleted_files_from_index",
+                    return_value=[],
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "should_document_file",
+                    side_effect=should_document,
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "build_full_scan_plan",
+                    return_value=[],
+                ) as build_plan,
+                patch.object(
+                    codebase_documenter,
+                    "save_index",
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "load_all_file_summaries",
+                    return_value=[],
+                ),
+            ):
+                summary = (
+                    codebase_documenter.generate_codebase_documentation(
+                        root_dir=temp_dir,
+                        repository="example/repository",
+                        output_json=output_json,
+                        output_markdown=output_markdown,
+                        max_files=1,
+                    )
+                )
+
+            planned_items = build_plan.call_args.args[0]
+
+            self.assertEqual(len(planned_items), 1)
+            self.assertEqual(
+                planned_items[0]["path"],
+                "src/changed.py",
+            )
+            self.assertEqual(
+                summary["stats"]["changed_or_new_files"],
+                1,
+            )
+            self.assertEqual(
+                summary["stats"]["skipped_by_limit"],
+                0,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -406,18 +406,13 @@ def generate_codebase_documentation(
         current_paths=current_paths,
     )
 
-    selected_files = reviewable_files[:max_files]
-    skipped_by_limit = max(
-        0,
-        len(reviewable_files) - len(selected_files),
-    )
-
-    file_items = []
+    changed_file_items = []
     unchanged_count = 0
 
-    for file_info in selected_files:
+    for file_info in reviewable_files:
         try:
             source_path = os.path.join(root_dir, file_info.path)
+
             with open(source_path, "r", encoding="utf-8") as source_file:
                 content = source_file.read()
 
@@ -429,7 +424,7 @@ def generate_codebase_documentation(
                 unchanged_count += 1
                 continue
 
-            file_items.append(
+            changed_file_items.append(
                 {
                     "path": file_info.path,
                     "language": file_info.language,
@@ -439,6 +434,12 @@ def generate_codebase_documentation(
             )
         except UnicodeDecodeError:
             continue
+
+    file_items = changed_file_items[:max_files]
+    skipped_by_limit = max(
+        0,
+        len(changed_file_items) - len(file_items),
+    )
 
     scan_plan = build_full_scan_plan(file_items)
 
@@ -551,7 +552,7 @@ def generate_codebase_documentation(
         "deleted_files": deleted_paths,
         "stats": {
             "repository_files": len(reviewable_files),
-            "selected_files": len(selected_files),
+            "selected_files": len(file_items),
             "skipped_by_limit": skipped_by_limit,
             "changed_or_new_files": len(file_items),
             "unchanged_files": unchanged_count,
