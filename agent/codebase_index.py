@@ -167,3 +167,101 @@ def remove_deleted_files_from_index(
             continue
 
     return deleted_paths
+
+
+def summary_path_for_file(
+    path: str,
+    summary_dir: str = ".ai-review/summaries",
+) -> str:
+    """Dosya için deterministic per-file summary yolunu oluşturur."""
+    return os.path.join(
+        summary_dir,
+        safe_summary_filename(path),
+    )
+
+
+def save_file_summary(
+    path: str,
+    file_doc: dict[str, Any],
+    summary_dir: str = ".ai-review/summaries",
+) -> str:
+    """Dosya dokümantasyonunu ayrı bir JSON dosyasına kaydeder."""
+    output_path = summary_path_for_file(
+        path=path,
+        summary_dir=summary_dir,
+    )
+
+    parent_directory = os.path.dirname(output_path)
+    if parent_directory:
+        os.makedirs(parent_directory, exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8") as summary_file:
+        json.dump(
+            file_doc,
+            summary_file,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    return output_path
+
+
+def update_index_entry(
+    index: dict[str, Any],
+    path: str,
+    language: str,
+    content: str,
+    line_count: int,
+    summary_path: str,
+) -> None:
+    """Başarıyla dokümante edilen dosyanın index kaydını günceller."""
+    files = index.get("files")
+
+    if not isinstance(files, dict):
+        files = {}
+        index["files"] = files
+
+    files[path] = {
+        "sha256": calculate_sha256_text(content),
+        "language": language,
+        "line_count": line_count,
+        "summary_path": summary_path,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def load_all_file_summaries(
+    index: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Index içindeki geçerli per-file summary kayıtlarını yükler."""
+    files = index.get("files")
+
+    if not isinstance(files, dict):
+        return []
+
+    summaries: list[dict[str, Any]] = []
+
+    for _, entry in sorted(files.items()):
+        if not isinstance(entry, dict):
+            continue
+
+        summary_path = entry.get("summary_path")
+
+        if not isinstance(summary_path, str) or not summary_path:
+            continue
+
+        if not os.path.isfile(summary_path):
+            continue
+
+        try:
+            with open(summary_path, "r", encoding="utf-8") as summary_file:
+                parsed = json.load(summary_file)
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+
+        if not isinstance(parsed, dict):
+            continue
+
+        summaries.append(parsed)
+
+    return summaries

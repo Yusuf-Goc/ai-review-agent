@@ -5,11 +5,15 @@ import unittest
 
 from agent.codebase_index import (
     calculate_sha256_text,
+    load_all_file_summaries,
     load_index,
     remove_deleted_files_from_index,
     safe_summary_filename,
+    save_file_summary,
     save_index,
     should_document_file,
+    summary_path_for_file,
+    update_index_entry,
 )
 
 
@@ -221,6 +225,104 @@ class CodebaseIndexTests(unittest.TestCase):
             remaining_files = os.listdir(temp_dir)
 
             self.assertEqual(remaining_files, ["index.json"])
+
+    def test_summary_path_uses_configured_summary_directory(self):
+        path = summary_path_for_file(
+            "src/services/user.py",
+            summary_dir=".custom-summaries",
+        )
+
+        self.assertTrue(path.startswith(".custom-summaries"))
+        self.assertTrue(path.endswith(".json"))
+        self.assertNotIn("src/services", os.path.basename(path))
+
+    def test_file_summary_can_be_saved_and_loaded_from_index(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summary_dir = os.path.join(temp_dir, "summaries")
+            file_path = "src/example.py"
+            file_doc = {
+                "path": file_path,
+                "language": "python",
+                "purpose": "Example module",
+            }
+
+            summary_path = save_file_summary(
+                path=file_path,
+                file_doc=file_doc,
+                summary_dir=summary_dir,
+            )
+
+            index = {
+                "schema_version": "1.0",
+                "generated_at": "",
+                "files": {},
+            }
+
+            update_index_entry(
+                index=index,
+                path=file_path,
+                language="python",
+                content="print('hello')",
+                line_count=1,
+                summary_path=summary_path,
+            )
+
+            loaded = load_all_file_summaries(index)
+
+            self.assertEqual(loaded, [file_doc])
+            self.assertEqual(
+                index["files"][file_path]["summary_path"],
+                summary_path,
+            )
+
+    def test_update_index_entry_records_file_metadata(self):
+        index = {
+            "schema_version": "1.0",
+            "generated_at": "",
+            "files": {},
+        }
+
+        update_index_entry(
+            index=index,
+            path="src/example.py",
+            language="python",
+            content="print('hello')",
+            line_count=1,
+            summary_path=".ai-review/summaries/example.json",
+        )
+
+        entry = index["files"]["src/example.py"]
+
+        self.assertEqual(entry["language"], "python")
+        self.assertEqual(entry["line_count"], 1)
+        self.assertEqual(
+            entry["sha256"],
+            calculate_sha256_text("print('hello')"),
+        )
+        self.assertTrue(entry["updated_at"])
+
+    def test_missing_or_corrupted_summary_is_skipped(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_path = os.path.join(temp_dir, "missing.json")
+            corrupted_path = os.path.join(temp_dir, "corrupted.json")
+
+            with open(corrupted_path, "w", encoding="utf-8") as summary_file:
+                summary_file.write("{broken json")
+
+            index = {
+                "schema_version": "1.0",
+                "generated_at": "",
+                "files": {
+                    "src/missing.py": {
+                        "summary_path": missing_path,
+                    },
+                    "src/corrupted.py": {
+                        "summary_path": corrupted_path,
+                    },
+                },
+            }
+
+            self.assertEqual(load_all_file_summaries(index), [])
 
 
 if __name__ == "__main__":
