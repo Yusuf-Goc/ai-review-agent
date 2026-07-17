@@ -378,6 +378,107 @@ def _ensure_parent_directory(path: str) -> None:
         os.makedirs(parent_directory, exist_ok=True)
 
 
+def collect_docs_scan_input(
+    root_dir: str = ".",
+    max_files: int | None = 300,
+) -> dict[str, Any]:
+    """
+    Repository'yi tarar ve documentation scan planını hazırlar.
+
+    max_files=None kullanıldığında bütün değişen/yeni dosyalar seçilir.
+    Sayısal limit verildiğinde limit, değişiklik tespitinden sonra uygulanır.
+    """
+    if max_files is not None and max_files < 0:
+        raise ValueError("max_files negatif olamaz.")
+
+    reviewable_files = find_reviewable_repo_files(
+        root_dir=root_dir,
+    )
+
+    index_path = os.path.join(
+        root_dir,
+        ".ai-review",
+        "index.json",
+    )
+    index = load_index(index_path=index_path)
+
+    current_paths = {
+        file_info.path
+        for file_info in reviewable_files
+    }
+
+    deleted_paths = remove_deleted_files_from_index(
+        index=index,
+        current_paths=current_paths,
+    )
+
+    changed_file_items = []
+    unchanged_count = 0
+
+    for file_info in reviewable_files:
+        try:
+            source_path = os.path.join(
+                root_dir,
+                file_info.path,
+            )
+
+            with open(
+                source_path,
+                "r",
+                encoding="utf-8",
+            ) as source_file:
+                content = source_file.read()
+
+            if not should_document_file(
+                index,
+                file_info.path,
+                content,
+            ):
+                unchanged_count += 1
+                continue
+
+            changed_file_items.append(
+                {
+                    "path": file_info.path,
+                    "language": file_info.language,
+                    "line_count": file_info.line_count,
+                    "content": content,
+                }
+            )
+
+        except UnicodeDecodeError:
+            continue
+
+    if max_files is None:
+        file_items = changed_file_items
+    else:
+        file_items = changed_file_items[:max_files]
+
+    skipped_by_limit = max(
+        0,
+        len(changed_file_items) - len(file_items),
+    )
+
+    scan_plan = build_full_scan_plan(file_items)
+
+    return {
+        "reviewable_files": reviewable_files,
+        "repository_files": len(reviewable_files),
+        "index": index,
+        "index_path": index_path,
+        "deleted_paths": deleted_paths,
+        "file_items": file_items,
+        "scan_plan": scan_plan,
+        "selected_files": len(file_items),
+        "changed_or_new_files": len(file_items),
+        "detected_changed_or_new_files": len(
+            changed_file_items
+        ),
+        "unchanged_files": unchanged_count,
+        "skipped_by_limit": skipped_by_limit,
+    }
+
+
 def process_docs_scan_units(
     scan_units: list,
     model: str = DEFAULT_MODEL,
@@ -468,60 +569,19 @@ def generate_codebase_documentation(
     output_markdown: str = "docs/ai-codebase-report.md",
     max_files: int = 300,
 ) -> dict:
-    reviewable_files = find_reviewable_repo_files(root_dir=root_dir)
-
-    index_path = os.path.join(
-        root_dir,
-        ".ai-review",
-        "index.json",
-    )
-    index = load_index(index_path=index_path)
-
-    current_paths = {
-        file_info.path
-        for file_info in reviewable_files
-    }
-    deleted_paths = remove_deleted_files_from_index(
-        index=index,
-        current_paths=current_paths,
+    prepared = collect_docs_scan_input(
+        root_dir=root_dir,
+        max_files=max_files,
     )
 
-    changed_file_items = []
-    unchanged_count = 0
-
-    for file_info in reviewable_files:
-        try:
-            source_path = os.path.join(root_dir, file_info.path)
-
-            with open(source_path, "r", encoding="utf-8") as source_file:
-                content = source_file.read()
-
-            if not should_document_file(
-                index,
-                file_info.path,
-                content,
-            ):
-                unchanged_count += 1
-                continue
-
-            changed_file_items.append(
-                {
-                    "path": file_info.path,
-                    "language": file_info.language,
-                    "line_count": file_info.line_count,
-                    "content": content,
-                }
-            )
-        except UnicodeDecodeError:
-            continue
-
-    file_items = changed_file_items[:max_files]
-    skipped_by_limit = max(
-        0,
-        len(changed_file_items) - len(file_items),
-    )
-
-    scan_plan = build_full_scan_plan(file_items)
+    reviewable_files = prepared["reviewable_files"]
+    index = prepared["index"]
+    index_path = prepared["index_path"]
+    deleted_paths = prepared["deleted_paths"]
+    file_items = prepared["file_items"]
+    scan_plan = prepared["scan_plan"]
+    unchanged_count = prepared["unchanged_files"]
+    skipped_by_limit = prepared["skipped_by_limit"]
 
     merged_files_by_path, failed_units = process_docs_scan_units(
         scan_units=scan_plan,
