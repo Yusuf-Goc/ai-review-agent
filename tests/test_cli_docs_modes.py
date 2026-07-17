@@ -250,5 +250,67 @@ class CliDocsModesTests(unittest.TestCase):
             )
 
 
+    def test_merge_mode_allows_empty_results_for_zero_shards(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle_dir = Path(temp_dir, "bundle")
+            results_dir = Path(temp_dir, "results")
+
+            bundle_dir.mkdir(parents=True)
+            results_dir.mkdir(parents=True)
+
+            expected_summary = {
+                "stats": {
+                    "documented_files": 0,
+                    "failed_units": 0,
+                }
+            }
+
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "cli.py",
+                        "--merge-codebase-docs-shards",
+                        "--docs-bundle-dir",
+                        str(bundle_dir),
+                        "--docs-results-dir",
+                        str(results_dir),
+                    ],
+                ),
+                patch.dict(
+                    "os.environ",
+                    {
+                        "GITHUB_REPOSITORY": (
+                            "example/repository"
+                        ),
+                    },
+                    clear=False,
+                ),
+                patch(
+                    "cli.merge_codebase_docs_bundle",
+                    return_value=expected_summary,
+                ) as merge_bundle,
+                patch("builtins.print"),
+            ):
+                exit_code = cli.main()
+
+            self.assertEqual(exit_code, 0)
+
+            merge_bundle.assert_called_once_with(
+                root_dir=".",
+                bundle_dir=str(bundle_dir),
+                result_paths=[],
+                repository="example/repository",
+                output_json=(
+                    ".ai-review/codebase-summary.json"
+                ),
+                output_markdown=(
+                    "docs/ai-codebase-report.md"
+                ),
+                max_files=None,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

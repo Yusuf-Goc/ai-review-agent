@@ -160,14 +160,6 @@ def main():
             if result_path.is_file()
         )
 
-        if not result_paths:
-            print(
-                "Hata: Documentation worker sonuç JSON "
-                "dosyası bulunamadı.",
-                file=sys.stderr,
-            )
-            return 2
-
         try:
             summary = merge_codebase_docs_bundle(
                 root_dir=".",
