@@ -39,45 +39,71 @@ def safe_summary_filename(path: str) -> str:
     return f"{safe_basename}.{path_digest}.json"
 
 
-def load_index(index_path: str) -> dict[str, Any]:
-    """Index yoksa veya okunamıyorsa kontrollü boş index döndürür."""
-    if not os.path.exists(index_path):
-        return _empty_index()
+def _normalize_loaded_index(parsed: Any) -> dict[str, Any] | None:
+    """Okunan JSON verisini geçerli index yapısına dönüştürür."""
+    if not isinstance(parsed, dict):
+        return None
+
+    normalized = dict(parsed)
+
+    if not isinstance(normalized.get("files"), dict):
+        normalized["files"] = {}
+
+    if not isinstance(normalized.get("schema_version"), str):
+        normalized["schema_version"] = INDEX_SCHEMA_VERSION
+
+    if not isinstance(normalized.get("generated_at"), str):
+        normalized["generated_at"] = ""
+
+    return normalized
+
+
+def _load_index_file(index_path: str) -> dict[str, Any] | None:
+    """Tek bir index dosyasını kontrollü biçimde okumaya çalışır."""
+    if not os.path.isfile(index_path):
+        return None
 
     try:
         with open(index_path, "r", encoding="utf-8") as index_file:
             parsed = json.load(index_file)
     except (OSError, json.JSONDecodeError, TypeError):
-        return _empty_index()
+        return None
 
-    if not isinstance(parsed, dict):
-        return _empty_index()
-
-    files = parsed.get("files")
-    if not isinstance(files, dict):
-        parsed["files"] = {}
-
-    if not isinstance(parsed.get("schema_version"), str):
-        parsed["schema_version"] = INDEX_SCHEMA_VERSION
-
-    if not isinstance(parsed.get("generated_at"), str):
-        parsed["generated_at"] = ""
-
-    return parsed
+    return _normalize_loaded_index(parsed)
 
 
-def save_index(index: dict[str, Any], index_path: str) -> None:
-    """Index'i geçici dosya üzerinden atomic biçimde kaydeder."""
-    parent_directory = os.path.dirname(index_path)
+def load_index(index_path: str) -> dict[str, Any]:
+    """
+    Ana index'i yükler.
+
+    Ana dosya yoksa veya bozuksa `.bak` yedeği denenir.
+    İki dosya da kullanılamıyorsa güvenli boş index döndürülür.
+    """
+    loaded = _load_index_file(index_path)
+
+    if loaded is not None:
+        return loaded
+
+    backup_path = index_path + ".bak"
+    recovered = _load_index_file(backup_path)
+
+    if recovered is not None:
+        return recovered
+
+    return _empty_index()
+
+
+def _atomic_write_json(
+    payload: dict[str, Any],
+    output_path: str,
+    temporary_prefix: str,
+) -> None:
+    """JSON verisini aynı klasörde geçici dosya üzerinden atomic yazar."""
+    parent_directory = os.path.dirname(output_path)
     target_directory = parent_directory or "."
 
     if parent_directory:
         os.makedirs(parent_directory, exist_ok=True)
-
-    index_to_save = dict(index)
-    index_to_save.setdefault("schema_version", INDEX_SCHEMA_VERSION)
-    index_to_save.setdefault("files", {})
-    index_to_save["generated_at"] = datetime.now(timezone.utc).isoformat()
 
     temporary_path = None
 
@@ -86,14 +112,14 @@ def save_index(index: dict[str, Any], index_path: str) -> None:
             mode="w",
             encoding="utf-8",
             dir=target_directory,
-            prefix=".index-",
+            prefix=temporary_prefix,
             suffix=".tmp",
             delete=False,
         ) as temporary_file:
             temporary_path = temporary_file.name
 
             json.dump(
-                index_to_save,
+                payload,
                 temporary_file,
                 ensure_ascii=False,
                 indent=2,
@@ -101,12 +127,43 @@ def save_index(index: dict[str, Any], index_path: str) -> None:
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
 
-        os.replace(temporary_path, index_path)
+        os.replace(temporary_path, output_path)
         temporary_path = None
 
     finally:
         if temporary_path and os.path.exists(temporary_path):
             os.remove(temporary_path)
+
+
+def save_index(index: dict[str, Any], index_path: str) -> None:
+    """
+    Index'i atomic biçimde kaydeder.
+
+    Mevcut ana index geçerliyse, yeni sürüm yazılmadan önce önceki
+    sürüm `<index_path>.bak` yolunda korunur. Bozuk bir ana index,
+    mevcut sağlam yedeğin üzerine yazılmaz.
+    """
+    index_to_save = dict(index)
+    index_to_save.setdefault("schema_version", INDEX_SCHEMA_VERSION)
+    index_to_save.setdefault("files", {})
+    index_to_save["generated_at"] = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    previous_index = _load_index_file(index_path)
+
+    if previous_index is not None:
+        _atomic_write_json(
+            payload=previous_index,
+            output_path=index_path + ".bak",
+            temporary_prefix=".index-backup-",
+        )
+
+    _atomic_write_json(
+        payload=index_to_save,
+        output_path=index_path,
+        temporary_prefix=".index-",
+    )
 
 
 def should_document_file(

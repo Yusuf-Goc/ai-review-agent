@@ -351,5 +351,79 @@ class CodebaseIndexTests(unittest.TestCase):
             self.assertEqual(loaded, file_doc)
 
 
+    def test_corrupted_index_is_recovered_from_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            index_path = os.path.join(temp_dir, "index.json")
+            backup_path = index_path + ".bak"
+
+            valid_index = {
+                "schema_version": "1.0",
+                "generated_at": "2026-07-17T00:00:00+00:00",
+                "files": {
+                    "src/example.py": {
+                        "sha256": "example-hash",
+                        "language": "python",
+                    },
+                },
+            }
+
+            with open(backup_path, "w", encoding="utf-8") as backup_file:
+                json.dump(valid_index, backup_file)
+
+            with open(index_path, "w", encoding="utf-8") as index_file:
+                index_file.write("{broken json")
+
+            loaded = load_index(index_path=index_path)
+
+            self.assertEqual(
+                loaded["files"]["src/example.py"]["language"],
+                "python",
+            )
+
+
+    def test_save_index_preserves_previous_version_as_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            index_path = os.path.join(temp_dir, "index.json")
+            backup_path = index_path + ".bak"
+
+            first_index = {
+                "schema_version": "1.0",
+                "generated_at": "",
+                "files": {
+                    "src/first.py": {
+                        "sha256": "first-hash",
+                        "language": "python",
+                    },
+                },
+            }
+
+            second_index = {
+                "schema_version": "1.0",
+                "generated_at": "",
+                "files": {
+                    "src/second.py": {
+                        "sha256": "second-hash",
+                        "language": "python",
+                    },
+                },
+            }
+
+            save_index(first_index, index_path=index_path)
+            save_index(second_index, index_path=index_path)
+
+            self.assertTrue(os.path.isfile(backup_path))
+
+            with open(backup_path, "r", encoding="utf-8") as backup_file:
+                backup = json.load(backup_file)
+
+            self.assertIn("src/first.py", backup["files"])
+            self.assertNotIn("src/second.py", backup["files"])
+
+            current = load_index(index_path=index_path)
+
+            self.assertIn("src/second.py", current["files"])
+            self.assertNotIn("src/first.py", current["files"])
+
+
 if __name__ == "__main__":
     unittest.main()
