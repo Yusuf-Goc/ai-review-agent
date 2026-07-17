@@ -4,6 +4,7 @@ import os
 import sys
 
 from agent.codebase_documenter import generate_codebase_documentation
+from agent.docs_commands import prepare_codebase_docs_bundle
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
 from agent.git_diff import GitDiffError, get_git_diff
@@ -52,6 +53,14 @@ def main():
         action="store_true",
         help="GitHub Actions ortamında codebase dokümantasyonu üretir",
     )
+    input_group.add_argument(
+        "--prepare-codebase-docs",
+        action="store_true",
+        help=(
+            "Büyük repository dokümantasyonu için "
+            "matrix shard bundle'ı hazırlar"
+        ),
+    )
     parser.add_argument("--base", help="Karsilastirma icin base commit/ref")
     parser.add_argument("--head", help="Karsilastirma icin head commit/ref")
     parser.add_argument("--language", help="Kod dili. Verilmezse dosya uzantisindan tahmin edilir")
@@ -74,12 +83,51 @@ def main():
         help="Ilk tekrar denemeden once beklenecek saniye",
     )
     parser.add_argument(
+        "--docs-output-dir",
+        default=".ai-review/docs-execution",
+        help=(
+            "Documentation shard manifest ve payload "
+            "dosyalarının yazılacağı klasör"
+        ),
+    )
+    parser.add_argument(
         "--max-review-lines",
         type=int,
         default=MAX_REVIEW_LINES,
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
+
+    if args.prepare_codebase_docs:
+        try:
+            prepared = prepare_codebase_docs_bundle(
+                root_dir=".",
+                output_dir=args.docs_output_dir,
+                max_files=None,
+            )
+
+            manifest = prepared["manifest"]
+            state = prepared["state"]
+
+            print("[AI Codebase Documentation Prepare]")
+            print("-" * 50)
+            print(
+                f"{state.get('repository_files', 0)} repository dosyası, "
+                f"{state.get('selected_files', 0)} değişen/yeni dosya, "
+                f"{state.get('planned_units', 0)} analiz birimi ve "
+                f"{manifest.get('shard_count', 0)} shard hazırlandı."
+            )
+            print(f"Bundle klasörü: {args.docs_output_dir}")
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Codebase documentation shard "
+                f"hazırlığı başarısız oldu: {exc}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.github_codebase_docs:
         try:
