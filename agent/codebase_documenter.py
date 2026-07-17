@@ -378,17 +378,22 @@ def _ensure_parent_directory(path: str) -> None:
         os.makedirs(parent_directory, exist_ok=True)
 
 
-def generate_codebase_documentation(
+def collect_docs_scan_input(
     root_dir: str = ".",
-    repository: str | None = None,
-    model: str = DEFAULT_MODEL,
-    retries: int = DEFAULT_RETRIES,
-    retry_delay: float = DEFAULT_RETRY_DELAY,
-    output_json: str = ".ai-review/codebase-summary.json",
-    output_markdown: str = "docs/ai-codebase-report.md",
-    max_files: int = 300,
-) -> dict:
-    reviewable_files = find_reviewable_repo_files(root_dir=root_dir)
+    max_files: int | None = 300,
+) -> dict[str, Any]:
+    """
+    Repository'yi tarar ve documentation scan planını hazırlar.
+
+    max_files=None kullanıldığında bütün değişen/yeni dosyalar seçilir.
+    Sayısal limit verildiğinde limit, değişiklik tespitinden sonra uygulanır.
+    """
+    if max_files is not None and max_files < 0:
+        raise ValueError("max_files negatif olamaz.")
+
+    reviewable_files = find_reviewable_repo_files(
+        root_dir=root_dir,
+    )
 
     index_path = os.path.join(
         root_dir,
@@ -401,6 +406,7 @@ def generate_codebase_documentation(
         file_info.path
         for file_info in reviewable_files
     }
+
     deleted_paths = remove_deleted_files_from_index(
         index=index,
         current_paths=current_paths,
@@ -411,9 +417,16 @@ def generate_codebase_documentation(
 
     for file_info in reviewable_files:
         try:
-            source_path = os.path.join(root_dir, file_info.path)
+            source_path = os.path.join(
+                root_dir,
+                file_info.path,
+            )
 
-            with open(source_path, "r", encoding="utf-8") as source_file:
+            with open(
+                source_path,
+                "r",
+                encoding="utf-8",
+            ) as source_file:
                 content = source_file.read()
 
             if not should_document_file(
@@ -432,10 +445,15 @@ def generate_codebase_documentation(
                     "content": content,
                 }
             )
+
         except UnicodeDecodeError:
             continue
 
-    file_items = changed_file_items[:max_files]
+    if max_files is None:
+        file_items = changed_file_items
+    else:
+        file_items = changed_file_items[:max_files]
+
     skipped_by_limit = max(
         0,
         len(changed_file_items) - len(file_items),
@@ -443,10 +461,40 @@ def generate_codebase_documentation(
 
     scan_plan = build_full_scan_plan(file_items)
 
-    merged_files_by_path: dict[str, dict] = {}
-    failed_units = []
+    return {
+        "reviewable_files": reviewable_files,
+        "repository_files": len(reviewable_files),
+        "index": index,
+        "index_path": index_path,
+        "deleted_paths": deleted_paths,
+        "file_items": file_items,
+        "scan_plan": scan_plan,
+        "selected_files": len(file_items),
+        "changed_or_new_files": len(file_items),
+        "detected_changed_or_new_files": len(
+            changed_file_items
+        ),
+        "unchanged_files": unchanged_count,
+        "skipped_by_limit": skipped_by_limit,
+    }
 
-    for scan_unit in scan_plan:
+
+def process_docs_scan_units(
+    scan_units: list,
+    model: str = DEFAULT_MODEL,
+    retries: int = DEFAULT_RETRIES,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+) -> tuple[dict[str, dict], list[dict[str, str]]]:
+    """
+    Scan unit'lerini Gemini ile işler ve dosya sonuçlarını birleştirir.
+
+    Bu fonksiyon index veya rapor dosyası yazmaz. Böylece hem mevcut sıralı
+    akış hem de matrix worker'ları aynı model/retry davranışını kullanabilir.
+    """
+    merged_files_by_path: dict[str, dict] = {}
+    failed_units: list[dict[str, str]] = []
+
+    for scan_unit in scan_units:
         prompt = _build_docs_prompt(scan_unit)
 
         try:
@@ -479,12 +527,13 @@ def generate_codebase_documentation(
                 )
 
             for file_doc in parsed.get("files", []):
-                path = file_doc.get("path")
-                if not path:
+                file_path = file_doc.get("path")
+
+                if not file_path:
                     continue
 
-                merged_files_by_path[path] = _merge_file_doc(
-                    merged_files_by_path.get(path, {}),
+                merged_files_by_path[file_path] = _merge_file_doc(
+                    merged_files_by_path.get(file_path, {}),
                     file_doc,
                 )
 
@@ -497,9 +546,39 @@ def generate_codebase_documentation(
             )
 
             if _is_transient_error(exc):
-                print(f"{scan_unit.unit_id} geçici model hatasıyla atlandı: {exc}")
+                print(
+                    f"{scan_unit.unit_id} geçici model "
+                    f"hatasıyla atlandı: {exc}"
+                )
             else:
-                print(f"{scan_unit.unit_id} dokümantasyon hatasıyla atlandı: {exc}")
+                print(
+                    f"{scan_unit.unit_id} dokümantasyon "
+                    f"hatasıyla atlandı: {exc}"
+                )
+
+    return merged_files_by_path, failed_units
+
+
+def finalize_docs_results(
+    prepared: dict[str, Any],
+    merged_files_by_path: dict[str, dict],
+    failed_units: list[dict],
+    root_dir: str = ".",
+    repository: str | None = None,
+    output_json: str = ".ai-review/codebase-summary.json",
+    output_markdown: str = "docs/ai-codebase-report.md",
+) -> dict:
+    """
+    Documentation sonuçlarını kalıcı index ve raporlara yazar.
+
+    Hem küçük repository sıralı akışı hem de matrix merge aşaması
+    bu fonksiyonu kullanır.
+    """
+    index = prepared["index"]
+    index_path = prepared["index_path"]
+    file_items = prepared.get("file_items", [])
+    deleted_paths = prepared.get("deleted_paths", [])
+    scan_plan = prepared.get("scan_plan", [])
 
     content_by_path = {
         item["path"]: item
@@ -512,21 +591,22 @@ def generate_codebase_documentation(
         "summaries",
     )
 
-    for path, file_doc in merged_files_by_path.items():
-        source_item = content_by_path.get(path)
+    for file_path in sorted(merged_files_by_path):
+        file_doc = merged_files_by_path[file_path]
+        source_item = content_by_path.get(file_path)
 
         if not source_item:
             continue
 
         summary_path = save_file_summary(
-            path=path,
+            path=file_path,
             file_doc=file_doc,
             summary_dir=summary_dir,
         )
 
         update_index_entry(
             index=index,
-            path=path,
+            path=file_path,
             language=source_item["language"],
             content=source_item["content"],
             line_count=source_item["line_count"],
@@ -542,8 +622,13 @@ def generate_codebase_documentation(
 
     summary = {
         "schema_version": "1.0",
-        "repository": repository or os.getenv("GITHUB_REPOSITORY", ""),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "repository": (
+            repository
+            or os.getenv("GITHUB_REPOSITORY", "")
+        ),
+        "generated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
         "files": sorted(
             all_file_summaries,
             key=lambda item: item.get("path", ""),
@@ -551,11 +636,26 @@ def generate_codebase_documentation(
         "failed_units": failed_units,
         "deleted_files": deleted_paths,
         "stats": {
-            "repository_files": len(reviewable_files),
-            "selected_files": len(file_items),
-            "skipped_by_limit": skipped_by_limit,
-            "changed_or_new_files": len(file_items),
-            "unchanged_files": unchanged_count,
+            "repository_files": prepared.get(
+                "repository_files",
+                len(prepared.get("reviewable_files", [])),
+            ),
+            "selected_files": prepared.get(
+                "selected_files",
+                len(file_items),
+            ),
+            "skipped_by_limit": prepared.get(
+                "skipped_by_limit",
+                0,
+            ),
+            "changed_or_new_files": prepared.get(
+                "changed_or_new_files",
+                len(file_items),
+            ),
+            "unchanged_files": prepared.get(
+                "unchanged_files",
+                0,
+            ),
             "planned_units": len(scan_plan),
             "documented_files": len(all_file_summaries),
             "failed_units": len(failed_units),
@@ -566,10 +666,58 @@ def generate_codebase_documentation(
     _ensure_parent_directory(output_json)
     _ensure_parent_directory(output_markdown)
 
-    with open(output_json, "w", encoding="utf-8") as json_file:
-        json.dump(summary, json_file, ensure_ascii=False, indent=2)
+    with open(
+        output_json,
+        "w",
+        encoding="utf-8",
+    ) as json_file:
+        json.dump(
+            summary,
+            json_file,
+            ensure_ascii=False,
+            indent=2,
+        )
 
-    with open(output_markdown, "w", encoding="utf-8") as markdown_file:
-        markdown_file.write(_build_markdown_report(summary))
+    with open(
+        output_markdown,
+        "w",
+        encoding="utf-8",
+    ) as markdown_file:
+        markdown_file.write(
+            _build_markdown_report(summary)
+        )
 
     return summary
+
+
+def generate_codebase_documentation(
+    root_dir: str = ".",
+    repository: str | None = None,
+    model: str = DEFAULT_MODEL,
+    retries: int = DEFAULT_RETRIES,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    output_json: str = ".ai-review/codebase-summary.json",
+    output_markdown: str = "docs/ai-codebase-report.md",
+    max_files: int = 300,
+) -> dict:
+    prepared = collect_docs_scan_input(
+        root_dir=root_dir,
+        max_files=max_files,
+    )
+
+    merged_files_by_path, failed_units = process_docs_scan_units(
+        scan_units=prepared["scan_plan"],
+        model=model,
+        retries=retries,
+        retry_delay=retry_delay,
+    )
+
+    return finalize_docs_results(
+        prepared=prepared,
+        merged_files_by_path=merged_files_by_path,
+        failed_units=failed_units,
+        root_dir=root_dir,
+        repository=repository,
+        output_json=output_json,
+        output_markdown=output_markdown,
+    )

@@ -75,68 +75,14 @@ jobs:
 
   codebase-docs:
     if: ${{ inputs.scan_mode == 'docs' }}
-    runs-on: ubuntu-latest
-
-    concurrency:
-      group: ai-codebase-docs-${{ github.repository }}-${{ github.ref }}
-      cancel-in-progress: false
 
     permissions:
       contents: write
 
-    steps:
-      - name: Checkout target repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          path: target-repo
+    uses: ./.github/workflows/docs.yml
 
-      - name: Checkout AI review agent
-        uses: actions/checkout@v4
-        with:
-          repository: Yusuf-Goc/ai-review-agent
-          ref: ${{ inputs.agent_ref }}
-          path: ai-review-agent
+    with:
+      agent_ref: ${{ inputs.agent_ref }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install agent dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r ai-review-agent/requirements.txt
-
-      - name: Run codebase documentation scan
-        timeout-minutes: 60
-        working-directory: target-repo
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          python ../ai-review-agent/cli.py --github-codebase-docs --retries 1 --retry-delay 2
-
-      - name: Commit codebase documentation
-        working-directory: target-repo
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add -A -- \
-            .ai-review/index.json \
-            .ai-review/index.json.bak \
-            .ai-review/codebase-summary.json \
-            docs/ai-codebase-report.md
-
-          if [ -d .ai-review/summaries ]; then
-            git add -A -- .ai-review/summaries
-          fi
-
-          if git diff --cached --quiet; then
-            echo "Codebase documentation has no changes."
-          else
-            git commit -m "Update AI codebase documentation"
-            git push
-          fi
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

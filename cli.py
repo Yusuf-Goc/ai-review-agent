@@ -2,8 +2,14 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 from agent.codebase_documenter import generate_codebase_documentation
+from agent.docs_commands import (
+    merge_codebase_docs_bundle,
+    prepare_codebase_docs_bundle,
+)
+from agent.docs_worker import run_docs_worker
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
 from agent.git_diff import GitDiffError, get_git_diff
@@ -52,6 +58,30 @@ def main():
         action="store_true",
         help="GitHub Actions ortamında codebase dokümantasyonu üretir",
     )
+    input_group.add_argument(
+        "--prepare-codebase-docs",
+        action="store_true",
+        help=(
+            "Büyük repository dokümantasyonu için "
+            "matrix shard bundle'ı hazırlar"
+        ),
+    )
+    input_group.add_argument(
+        "--run-codebase-docs-shard",
+        action="store_true",
+        help=(
+            "Tek bir codebase documentation shard "
+            "payload'ını işler"
+        ),
+    )
+    input_group.add_argument(
+        "--merge-codebase-docs-shards",
+        action="store_true",
+        help=(
+            "Documentation shard worker sonuçlarını "
+            "birleştirip nihai raporları üretir"
+        ),
+    )
     parser.add_argument("--base", help="Karsilastirma icin base commit/ref")
     parser.add_argument("--head", help="Karsilastirma icin head commit/ref")
     parser.add_argument("--language", help="Kod dili. Verilmezse dosya uzantisindan tahmin edilir")
@@ -74,12 +104,163 @@ def main():
         help="Ilk tekrar denemeden once beklenecek saniye",
     )
     parser.add_argument(
+        "--docs-output-dir",
+        default=".ai-review/docs-execution",
+        help=(
+            "Documentation shard manifest ve payload "
+            "dosyalarının yazılacağı klasör"
+        ),
+    )
+    parser.add_argument(
+        "--docs-payload-file",
+        help="İşlenecek documentation shard payload JSON dosyası",
+    )
+    parser.add_argument(
+        "--docs-result-file",
+        help="Worker sonucunun yazılacağı JSON dosyası",
+    )
+    parser.add_argument(
+        "--docs-bundle-dir",
+        default=".ai-review/docs-execution",
+        help=(
+            "Prepare aşamasında üretilen documentation "
+            "bundle klasörü"
+        ),
+    )
+    parser.add_argument(
+        "--docs-results-dir",
+        default=".ai-review/docs-results",
+        help=(
+            "İndirilen shard worker sonuçlarının "
+            "bulunduğu ana klasör"
+        ),
+    )
+    parser.add_argument(
         "--max-review-lines",
         type=int,
         default=MAX_REVIEW_LINES,
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
+
+    if args.merge_codebase_docs_shards:
+        results_directory = Path(args.docs_results_dir)
+
+        if not results_directory.is_dir():
+            print(
+                "Hata: Documentation worker sonuç klasörü "
+                f"bulunamadı: {args.docs_results_dir}",
+                file=sys.stderr,
+            )
+            return 2
+
+        result_paths = sorted(
+            str(result_path)
+            for result_path in results_directory.rglob("*.json")
+            if result_path.is_file()
+        )
+
+        try:
+            summary = merge_codebase_docs_bundle(
+                root_dir=".",
+                bundle_dir=args.docs_bundle_dir,
+                result_paths=result_paths,
+                repository=os.getenv("GITHUB_REPOSITORY", ""),
+                output_json=".ai-review/codebase-summary.json",
+                output_markdown="docs/ai-codebase-report.md",
+                max_files=None,
+            )
+
+            print("[AI Codebase Documentation Shard Merge]")
+            print("-" * 50)
+            print(
+                f"{summary.get('stats', {}).get('documented_files', 0)} "
+                "dosya dokümante edildi, "
+                f"{summary.get('stats', {}).get('failed_units', 0)} "
+                "analiz birimi başarısız oldu."
+            )
+            print("Çıktılar:")
+            print("- .ai-review/codebase-summary.json")
+            print("- docs/ai-codebase-report.md")
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Codebase documentation shard "
+                f"sonuçları birleştirilemedi: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+    if args.run_codebase_docs_shard:
+        if not args.docs_payload_file or not args.docs_result_file:
+            print(
+                "Hata: --run-codebase-docs-shard için "
+                "--docs-payload-file ve --docs-result-file gereklidir.",
+                file=sys.stderr,
+            )
+            return 2
+
+        try:
+            result = run_docs_worker(
+                payload_path=args.docs_payload_file,
+                output_path=args.docs_result_file,
+                model=args.model,
+                retries=args.retries,
+                retry_delay=args.retry_delay,
+            )
+
+            print("[AI Codebase Documentation Shard Worker]")
+            print("-" * 50)
+            print(
+                f"{result.get('shard_id', '')}: "
+                f"{result.get('unit_count', 0)} analiz birimi işlendi, "
+                f"{len(result.get('files', []))} dosya sonucu üretildi, "
+                f"{len(result.get('failed_units', []))} birim başarısız oldu."
+            )
+            print(f"Sonuç dosyası: {args.docs_result_file}")
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Codebase documentation shard "
+                f"işlenemedi: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+    if args.prepare_codebase_docs:
+        try:
+            prepared = prepare_codebase_docs_bundle(
+                root_dir=".",
+                output_dir=args.docs_output_dir,
+                max_files=None,
+            )
+
+            manifest = prepared["manifest"]
+            state = prepared["state"]
+
+            print("[AI Codebase Documentation Prepare]")
+            print("-" * 50)
+            print(
+                f"{state.get('repository_files', 0)} repository dosyası, "
+                f"{state.get('selected_files', 0)} değişen/yeni dosya, "
+                f"{state.get('planned_units', 0)} analiz birimi ve "
+                f"{manifest.get('shard_count', 0)} shard hazırlandı."
+            )
+            print(f"Bundle klasörü: {args.docs_output_dir}")
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Codebase documentation shard "
+                f"hazırlığı başarısız oldu: {exc}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.github_codebase_docs:
         try:
