@@ -18,6 +18,7 @@ from agent.codebase_index import (
     load_index,
     remove_deleted_files_from_index,
     save_index,
+    should_document_file,
 )
 
 
@@ -405,12 +406,21 @@ def generate_codebase_documentation(
     selected_files = reviewable_files[:max_files]
 
     file_items = []
+    unchanged_count = 0
 
     for file_info in selected_files:
         try:
             source_path = os.path.join(root_dir, file_info.path)
             with open(source_path, "r", encoding="utf-8") as source_file:
                 content = source_file.read()
+
+            if not should_document_file(
+                index,
+                file_info.path,
+                content,
+            ):
+                unchanged_count += 1
+                continue
 
             file_items.append(
                 {
@@ -500,6 +510,8 @@ def generate_codebase_documentation(
         "deleted_files": deleted_paths,
         "stats": {
             "selected_files": len(selected_files),
+            "changed_or_new_files": len(file_items),
+            "unchanged_files": unchanged_count,
             "planned_units": len(scan_plan),
             "documented_files": len(merged_files_by_path),
             "failed_units": len(failed_units),
