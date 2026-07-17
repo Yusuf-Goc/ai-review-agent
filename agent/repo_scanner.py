@@ -95,4 +95,8 @@ def find_reviewable_repo_files(root_dir: str = ".") -> list[RepositorySourceFile
                 )
             )
 
+    files.sort(
+        key=lambda file_info: file_info.path.replace("\\", "/")
+    )
+
     return files
