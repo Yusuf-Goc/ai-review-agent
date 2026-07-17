@@ -14,6 +14,11 @@ from agent.config import (
 )
 from agent.full_scan_planner import build_full_scan_plan
 from agent.repo_scanner import find_reviewable_repo_files
+from agent.codebase_index import (
+    load_index,
+    remove_deleted_files_from_index,
+    save_index,
+)
 
 
 DOCS_SECOND_PASS_WAIT_SECONDS = 30
@@ -380,6 +385,23 @@ def generate_codebase_documentation(
     max_files: int = 300,
 ) -> dict:
     reviewable_files = find_reviewable_repo_files(root_dir=root_dir)
+
+    index_path = os.path.join(
+        root_dir,
+        ".ai-review",
+        "index.json",
+    )
+    index = load_index(index_path=index_path)
+
+    current_paths = {
+        file_info.path
+        for file_info in reviewable_files
+    }
+    deleted_paths = remove_deleted_files_from_index(
+        index=index,
+        current_paths=current_paths,
+    )
+
     selected_files = reviewable_files[:max_files]
 
     file_items = []
@@ -461,6 +483,11 @@ def generate_codebase_documentation(
             else:
                 print(f"{scan_unit.unit_id} dokümantasyon hatasıyla atlandı: {exc}")
 
+    save_index(
+        index=index,
+        index_path=index_path,
+    )
+
     summary = {
         "schema_version": "1.0",
         "repository": repository or os.getenv("GITHUB_REPOSITORY", ""),
@@ -470,11 +497,13 @@ def generate_codebase_documentation(
             key=lambda item: item.get("path", ""),
         ),
         "failed_units": failed_units,
+        "deleted_files": deleted_paths,
         "stats": {
             "selected_files": len(selected_files),
             "planned_units": len(scan_plan),
             "documented_files": len(merged_files_by_path),
             "failed_units": len(failed_units),
+            "deleted_files": len(deleted_paths),
         },
     }
 
