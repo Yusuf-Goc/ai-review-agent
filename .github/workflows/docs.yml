@@ -236,7 +236,7 @@ jobs:
     needs:
       - prepare
       - docs-workers
-    if: ${{ fromJSON(needs.prepare.outputs.shard_count) > 1 }}
+    if: ${{ always() && needs.prepare.result == 'success' && fromJSON(needs.prepare.outputs.shard_count) > 1 }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -272,7 +272,12 @@ jobs:
           name: codebase-docs-bundle
           path: target-repo/.ai-review/docs-execution
 
+      - name: Prepare shard results directory
+        run: |
+          mkdir -p target-repo/.ai-review/docs-results
+
       - name: Download shard results
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           pattern: docs-result-*

@@ -79,5 +79,50 @@ class DocsWorkflowTests(unittest.TestCase):
         )
 
 
+    def test_merge_runs_after_worker_failure(self):
+        merge_section = self.workflow.split(
+            "  docs-merge:",
+            1,
+        )[1]
+
+        self.assertIn(
+            "if: ${{ always() &&",
+            merge_section,
+        )
+        self.assertIn(
+            "needs.prepare.result == 'success'",
+            merge_section,
+        )
+        self.assertIn(
+            (
+                "fromJSON(needs.prepare.outputs.shard_count) "
+                "> 1"
+            ),
+            merge_section,
+        )
+
+    def test_missing_worker_artifacts_reach_merge_validation(self):
+        merge_section = self.workflow.split(
+            "  docs-merge:",
+            1,
+        )[1]
+
+        self.assertIn(
+            (
+                "mkdir -p "
+                "target-repo/.ai-review/docs-results"
+            ),
+            merge_section,
+        )
+        self.assertIn(
+            "continue-on-error: true",
+            merge_section,
+        )
+        self.assertIn(
+            "--merge-codebase-docs-shards",
+            merge_section,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
