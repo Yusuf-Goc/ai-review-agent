@@ -407,6 +407,10 @@ def generate_codebase_documentation(
     )
 
     selected_files = reviewable_files[:max_files]
+    skipped_by_limit = max(
+        0,
+        len(reviewable_files) - len(selected_files),
+    )
 
     file_items = []
     unchanged_count = 0
@@ -546,7 +550,9 @@ def generate_codebase_documentation(
         "failed_units": failed_units,
         "deleted_files": deleted_paths,
         "stats": {
+            "repository_files": len(reviewable_files),
             "selected_files": len(selected_files),
+            "skipped_by_limit": skipped_by_limit,
             "changed_or_new_files": len(file_items),
             "unchanged_files": unchanged_count,
             "planned_units": len(scan_plan),

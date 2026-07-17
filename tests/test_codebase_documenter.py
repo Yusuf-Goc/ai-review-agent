@@ -543,5 +543,104 @@ class CodebaseDocumenterTests(unittest.TestCase):
             self.assertEqual(summary["stats"]["documented_files"], 0)
 
 
+    def test_files_over_limit_are_reported_as_skipped(self):
+        reviewable_files = [
+            RepositorySourceFile(
+                path="src/first.py",
+                language="python",
+                line_count=1,
+            ),
+            RepositorySourceFile(
+                path="src/second.py",
+                language="python",
+                line_count=1,
+            ),
+            RepositorySourceFile(
+                path="src/third.py",
+                language="python",
+                line_count=1,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = os.path.join(temp_dir, "src")
+            os.makedirs(source_dir, exist_ok=True)
+
+            for file_info in reviewable_files:
+                with open(
+                    os.path.join(temp_dir, file_info.path),
+                    "w",
+                    encoding="utf-8",
+                ) as source_file:
+                    source_file.write("print('hello')\n")
+
+            output_json = os.path.join(
+                temp_dir,
+                ".ai-review",
+                "codebase-summary.json",
+            )
+            output_markdown = os.path.join(
+                temp_dir,
+                "docs",
+                "ai-codebase-report.md",
+            )
+
+            index = {
+                "schema_version": "1.0",
+                "generated_at": "",
+                "files": {},
+            }
+
+            with (
+                patch.object(
+                    codebase_documenter,
+                    "find_reviewable_repo_files",
+                    return_value=reviewable_files,
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "load_index",
+                    return_value=index,
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "remove_deleted_files_from_index",
+                    return_value=[],
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "should_document_file",
+                    return_value=True,
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "build_full_scan_plan",
+                    return_value=[],
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "save_index",
+                ),
+                patch.object(
+                    codebase_documenter,
+                    "load_all_file_summaries",
+                    return_value=[],
+                ),
+            ):
+                summary = (
+                    codebase_documenter.generate_codebase_documentation(
+                        root_dir=temp_dir,
+                        repository="example/repository",
+                        output_json=output_json,
+                        output_markdown=output_markdown,
+                        max_files=1,
+                    )
+                )
+
+            self.assertEqual(summary["stats"]["repository_files"], 3)
+            self.assertEqual(summary["stats"]["selected_files"], 1)
+            self.assertEqual(summary["stats"]["skipped_by_limit"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
