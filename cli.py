@@ -5,6 +5,7 @@ import sys
 
 from agent.codebase_documenter import generate_codebase_documentation
 from agent.docs_commands import prepare_codebase_docs_bundle
+from agent.docs_worker import run_docs_worker
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
 from agent.git_diff import GitDiffError, get_git_diff
@@ -61,6 +62,14 @@ def main():
             "matrix shard bundle'ı hazırlar"
         ),
     )
+    input_group.add_argument(
+        "--run-codebase-docs-shard",
+        action="store_true",
+        help=(
+            "Tek bir codebase documentation shard "
+            "payload'ını işler"
+        ),
+    )
     parser.add_argument("--base", help="Karsilastirma icin base commit/ref")
     parser.add_argument("--head", help="Karsilastirma icin head commit/ref")
     parser.add_argument("--language", help="Kod dili. Verilmezse dosya uzantisindan tahmin edilir")
@@ -91,12 +100,58 @@ def main():
         ),
     )
     parser.add_argument(
+        "--docs-payload-file",
+        help="İşlenecek documentation shard payload JSON dosyası",
+    )
+    parser.add_argument(
+        "--docs-result-file",
+        help="Worker sonucunun yazılacağı JSON dosyası",
+    )
+    parser.add_argument(
         "--max-review-lines",
         type=int,
         default=MAX_REVIEW_LINES,
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
+
+    if args.run_codebase_docs_shard:
+        if not args.docs_payload_file or not args.docs_result_file:
+            print(
+                "Hata: --run-codebase-docs-shard için "
+                "--docs-payload-file ve --docs-result-file gereklidir.",
+                file=sys.stderr,
+            )
+            return 2
+
+        try:
+            result = run_docs_worker(
+                payload_path=args.docs_payload_file,
+                output_path=args.docs_result_file,
+                model=args.model,
+                retries=args.retries,
+                retry_delay=args.retry_delay,
+            )
+
+            print("[AI Codebase Documentation Shard Worker]")
+            print("-" * 50)
+            print(
+                f"{result.get('shard_id', '')}: "
+                f"{result.get('unit_count', 0)} analiz birimi işlendi, "
+                f"{len(result.get('files', []))} dosya sonucu üretildi, "
+                f"{len(result.get('failed_units', []))} birim başarısız oldu."
+            )
+            print(f"Sonuç dosyası: {args.docs_result_file}")
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Codebase documentation shard "
+                f"işlenemedi: {exc}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.prepare_codebase_docs:
         try:

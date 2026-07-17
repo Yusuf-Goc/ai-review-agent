@@ -113,5 +113,60 @@ class CliDocsModesTests(unittest.TestCase):
         )
 
 
+    def test_worker_mode_processes_one_shard(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            payload_path = (
+                f"{temp_dir}/docs-shard-001.json"
+            )
+            result_path = (
+                f"{temp_dir}/results/docs-shard-001.json"
+            )
+
+            worker_result = {
+                "shard_id": "docs-shard-001",
+                "unit_count": 4,
+                "files": [],
+                "failed_units": [],
+            }
+
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "cli.py",
+                        "--run-codebase-docs-shard",
+                        "--docs-payload-file",
+                        payload_path,
+                        "--docs-result-file",
+                        result_path,
+                        "--model",
+                        "test-model",
+                        "--retries",
+                        "0",
+                        "--retry-delay",
+                        "0",
+                    ],
+                ),
+                patch(
+                    "cli.run_docs_worker",
+                    return_value=worker_result,
+                    create=True,
+                ) as run_worker,
+                patch("builtins.print"),
+            ):
+                exit_code = cli.main()
+
+            self.assertEqual(exit_code, 0)
+
+            run_worker.assert_called_once_with(
+                payload_path=payload_path,
+                output_path=result_path,
+                model="test-model",
+                retries=0,
+                retry_delay=0.0,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
