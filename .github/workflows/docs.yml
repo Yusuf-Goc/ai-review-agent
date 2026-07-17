@@ -55,7 +55,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add .ai-review/codebase-summary.json docs/ai-codebase-report.md
+          git add -A -- \
+            .ai-review/index.json \
+            .ai-review/codebase-summary.json \
+            docs/ai-codebase-report.md
+
+          if [ -d .ai-review/summaries ]; then
+            git add -A -- .ai-review/summaries
+          fi
 
           if git diff --cached --quiet; then
             echo "Codebase documentation has no changes."
