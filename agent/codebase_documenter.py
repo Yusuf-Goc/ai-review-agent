@@ -15,10 +15,13 @@ from agent.config import (
 from agent.full_scan_planner import build_full_scan_plan
 from agent.repo_scanner import find_reviewable_repo_files
 from agent.codebase_index import (
+    load_all_file_summaries,
     load_index,
     remove_deleted_files_from_index,
+    save_file_summary,
     save_index,
     should_document_file,
+    update_index_entry,
 )
 
 
@@ -493,17 +496,51 @@ def generate_codebase_documentation(
             else:
                 print(f"{scan_unit.unit_id} dokümantasyon hatasıyla atlandı: {exc}")
 
+    content_by_path = {
+        item["path"]: item
+        for item in file_items
+    }
+
+    summary_dir = os.path.join(
+        root_dir,
+        ".ai-review",
+        "summaries",
+    )
+
+    for path, file_doc in merged_files_by_path.items():
+        source_item = content_by_path.get(path)
+
+        if not source_item:
+            continue
+
+        summary_path = save_file_summary(
+            path=path,
+            file_doc=file_doc,
+            summary_dir=summary_dir,
+        )
+
+        update_index_entry(
+            index=index,
+            path=path,
+            language=source_item["language"],
+            content=source_item["content"],
+            line_count=source_item["line_count"],
+            summary_path=summary_path,
+        )
+
     save_index(
         index=index,
         index_path=index_path,
     )
+
+    all_file_summaries = load_all_file_summaries(index)
 
     summary = {
         "schema_version": "1.0",
         "repository": repository or os.getenv("GITHUB_REPOSITORY", ""),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "files": sorted(
-            merged_files_by_path.values(),
+            all_file_summaries,
             key=lambda item: item.get("path", ""),
         ),
         "failed_units": failed_units,
@@ -513,7 +550,7 @@ def generate_codebase_documentation(
             "changed_or_new_files": len(file_items),
             "unchanged_files": unchanged_count,
             "planned_units": len(scan_plan),
-            "documented_files": len(merged_files_by_path),
+            "documented_files": len(all_file_summaries),
             "failed_units": len(failed_units),
             "deleted_files": len(deleted_paths),
         },
