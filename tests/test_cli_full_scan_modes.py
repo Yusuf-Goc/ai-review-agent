@@ -1,6 +1,8 @@
+import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import cli
@@ -147,6 +149,112 @@ class CliFullScanModesTests(unittest.TestCase):
             max_review_lines=450,
             retries=2,
             retry_delay=3.0,
+        )
+
+
+    def test_merge_full_scan_shards_posts_single_issue(self):
+        review_result = {
+            "summary": (
+                "100 dosya, 3 shard ve 2 bulgu işlendi."
+            ),
+            "findings": [
+                {
+                    "file": "src/example.py",
+                    "line": 10,
+                    "severity": "high",
+                    "category": "logic_error",
+                    "message": "Örnek bulgu.",
+                    "suggestion": "Kontrol ekleyin.",
+                }
+            ],
+            "failed_units": [],
+            "full_scan_stats": {
+                "selected_files": 100,
+                "shard_count": 3,
+                "completed_shards": 3,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle_dir = os.path.join(
+                temp_dir,
+                "bundle",
+            )
+            results_dir = os.path.join(
+                temp_dir,
+                "results",
+            )
+
+            first_result_dir = os.path.join(
+                results_dir,
+                "worker-a",
+            )
+            second_result_dir = os.path.join(
+                results_dir,
+                "worker-b",
+            )
+
+            os.makedirs(bundle_dir)
+            os.makedirs(first_result_dir)
+            os.makedirs(second_result_dir)
+
+            first_result_path = os.path.join(
+                first_result_dir,
+                "docs-shard-001.json",
+            )
+            second_result_path = os.path.join(
+                second_result_dir,
+                "docs-shard-002.json",
+            )
+
+            Path(first_result_path).write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+            Path(second_result_path).write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "cli.py",
+                        "--merge-full-scan-shards",
+                        "--full-scan-bundle-dir",
+                        bundle_dir,
+                        "--full-scan-results-dir",
+                        results_dir,
+                    ],
+                ),
+                patch(
+                    "cli.merge_full_scan_bundle",
+                    return_value=review_result,
+                    create=True,
+                ) as merge_bundle,
+                patch(
+                    "cli.post_full_scan_result_as_issue",
+                ) as post_issue,
+                patch("builtins.print"),
+            ):
+                exit_code = cli.main()
+
+        self.assertEqual(exit_code, 0)
+
+        merge_bundle.assert_called_once_with(
+            root_dir=".",
+            bundle_dir=bundle_dir,
+            result_paths=[
+                first_result_path,
+                second_result_path,
+            ],
+            max_files=None,
+        )
+
+        post_issue.assert_called_once_with(
+            review_result,
         )
 
 

@@ -1,4 +1,5 @@
 import argparse
+import glob
 import json
 import os
 import sys
@@ -12,7 +13,10 @@ from agent.docs_commands import (
 from agent.docs_worker import run_docs_worker
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
-from agent.full_scan_commands import prepare_full_scan_bundle
+from agent.full_scan_commands import (
+    merge_full_scan_bundle,
+    prepare_full_scan_bundle,
+)
 from agent.full_scan_worker import run_full_scan_worker
 from agent.git_diff import GitDiffError, get_git_diff
 from agent.github_reporter import (
@@ -72,6 +76,14 @@ def main():
         ),
     )
     input_group.add_argument(
+        "--merge-full-scan-shards",
+        action="store_true",
+        help=(
+            "Full repository scan worker sonuçlarını "
+            "birleştirir ve tek GitHub issue oluşturur"
+        ),
+    )
+    input_group.add_argument(
         "--github-codebase-docs",
         action="store_true",
         help="GitHub Actions ortamında codebase dokümantasyonu üretir",
@@ -120,6 +132,22 @@ def main():
         type=float,
         default=DEFAULT_RETRY_DELAY,
         help="Ilk tekrar denemeden once beklenecek saniye",
+    )
+    parser.add_argument(
+        "--full-scan-bundle-dir",
+        default=".ai-review/full-scan-execution",
+        help=(
+            "Full scan manifestinin bulunduğu "
+            "bundle klasörü"
+        ),
+    )
+    parser.add_argument(
+        "--full-scan-results-dir",
+        default=".ai-review/full-scan-results",
+        help=(
+            "Full scan worker artifact'lerinin "
+            "bulunduğu klasör"
+        ),
     )
     parser.add_argument(
         "--full-scan-payload-file",
@@ -182,6 +210,71 @@ def main():
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
+
+    if args.merge_full_scan_shards:
+        try:
+            result_pattern = os.path.join(
+                args.full_scan_results_dir,
+                "**",
+                "*.json",
+            )
+
+            result_paths = sorted(
+                glob.glob(
+                    result_pattern,
+                    recursive=True,
+                )
+            )
+
+            if not result_paths:
+                print(
+                    "Hata: Full scan worker sonucu "
+                    "bulunamadı.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            review_result = merge_full_scan_bundle(
+                root_dir=".",
+                bundle_dir=args.full_scan_bundle_dir,
+                result_paths=result_paths,
+                max_files=None,
+            )
+
+            post_full_scan_result_as_issue(
+                review_result
+            )
+
+            stats = review_result.get(
+                "full_scan_stats",
+                {},
+            )
+
+            print("[AI Full Repository Scan Merge]")
+            print("-" * 50)
+            print(review_result.get("summary", ""))
+            print(
+                f"Tamamlanan shard: "
+                f"{stats.get('completed_shards', 0)}/"
+                f"{stats.get('shard_count', 0)}"
+            )
+            print(
+                f"Bulgu: "
+                f"{len(review_result.get('findings', []))}"
+            )
+            print(
+                "GitHub issue başarıyla oluşturuldu."
+            )
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Full repository scan merge "
+                f"işlemi başarısız oldu: {exc}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.run_full_scan_shard:
         if not args.full_scan_payload_file:
