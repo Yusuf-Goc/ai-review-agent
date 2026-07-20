@@ -124,5 +124,19 @@ class DocsWorkflowTests(unittest.TestCase):
         )
 
 
+    def test_index_backup_is_optional_during_commit(self):
+        optional_backup_block = (
+            "if [ -e .ai-review/index.json.bak ]; then\n"
+            "            git add -A -- "
+            ".ai-review/index.json.bak\n"
+            "          fi"
+        )
+
+        self.assertEqual(
+            self.workflow.count(optional_backup_block),
+            2,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

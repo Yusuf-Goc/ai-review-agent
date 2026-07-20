@@ -156,9 +156,12 @@ jobs:
 
           git add -A -- \
             .ai-review/index.json \
-            .ai-review/index.json.bak \
             .ai-review/codebase-summary.json \
             docs/ai-codebase-report.md
+
+          if [ -e .ai-review/index.json.bak ]; then
+            git add -A -- .ai-review/index.json.bak
+          fi
 
           if [ -d .ai-review/summaries ]; then
             git add -A -- .ai-review/summaries
@@ -304,9 +307,12 @@ jobs:
 
           git add -A -- \
             .ai-review/index.json \
-            .ai-review/index.json.bak \
             .ai-review/codebase-summary.json \
             docs/ai-codebase-report.md
+
+          if [ -e .ai-review/index.json.bak ]; then
+            git add -A -- .ai-review/index.json.bak
+          fi
 
           if [ -d .ai-review/summaries ]; then
             git add -A -- .ai-review/summaries
