@@ -17,13 +17,12 @@ on:
 
 jobs:
   ai-review:
-    if: ${{ inputs.scan_mode == 'pr' || inputs.scan_mode == 'full' }}
+    if: ${{ inputs.scan_mode == 'pr' }}
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
       pull-requests: write
-      issues: write
 
     steps:
       - name: Checkout target repository
@@ -50,7 +49,6 @@ jobs:
           pip install -r ai-review-agent/requirements.txt
 
       - name: Run PR AI review
-        if: ${{ inputs.scan_mode == 'pr' }}
         working-directory: target-repo
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -60,18 +58,25 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python ../ai-review-agent/cli.py --github-pr --retries 4 --retry-delay 3
+          python ../ai-review-agent/cli.py \
+            --github-pr \
+            --retries 4 \
+            --retry-delay 3
 
-      - name: Run full repository AI review
-        if: ${{ inputs.scan_mode == 'full' }}
-        timeout-minutes: 60
-        working-directory: target-repo
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          python ../ai-review-agent/cli.py --github-full-scan --retries 1 --retry-delay 2
+  full-repository-scan:
+    if: ${{ inputs.scan_mode == 'full' }}
+
+    permissions:
+      contents: read
+      issues: write
+
+    uses: ./.github/workflows/full-scan.yml
+
+    with:
+      agent_ref: ${{ inputs.agent_ref }}
+
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
   codebase-docs:
     if: ${{ inputs.scan_mode == 'docs' }}
