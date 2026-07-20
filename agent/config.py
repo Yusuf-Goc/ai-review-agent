@@ -1,7 +1,7 @@
 import os
 
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash"
 MAX_REVIEW_LINES = 500
 DEFAULT_RETRIES = 2
 DEFAULT_RETRY_DELAY = 2.0
