@@ -1,5 +1,4 @@
 import argparse
-import glob
 import json
 import os
 import sys
@@ -13,21 +12,15 @@ from agent.docs_commands import (
 from agent.docs_worker import run_docs_worker
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
-from agent.full_scan_commands import (
-    merge_full_scan_bundle,
-    prepare_full_scan_bundle,
-)
-from agent.full_scan_worker import run_full_scan_worker
 from agent.git_diff import GitDiffError, get_git_diff
 from agent.github_reporter import (
     GitHubReporterError,
-    post_full_scan_result_as_issue,
     post_review_result_to_pr,
 )
 from agent.payload_builder import attach_static_findings, build_code_payload
 from agent.pr_context import build_pr_file_context
 from agent.report_formatter import format_review_report
-from agent.reviewer import analyze_diff_in_batches, analyze_full_repository, analyze_source_code
+from agent.reviewer import analyze_diff_in_batches, analyze_source_code
 
 
 def read_from_stdin():
@@ -53,35 +46,6 @@ def main():
         "--github-pr",
         action="store_true",
         help="GitHub Actions pull request modunda calistir",
-    )
-    input_group.add_argument(
-        "--github-full-scan",
-        action="store_true",
-        help="GitHub Actions ortaminda tum repo kodlarini analiz eder ve issue olusturur",
-    )
-    input_group.add_argument(
-        "--prepare-full-scan",
-        action="store_true",
-        help=(
-            "Büyük repository full scan işlemi için "
-            "matrix shard bundle'ı hazırlar"
-        ),
-    )
-    input_group.add_argument(
-        "--run-full-scan-shard",
-        action="store_true",
-        help=(
-            "Tek bir full repository scan shard "
-            "payload'ını işler"
-        ),
-    )
-    input_group.add_argument(
-        "--merge-full-scan-shards",
-        action="store_true",
-        help=(
-            "Full repository scan worker sonuçlarını "
-            "birleştirir ve tek GitHub issue oluşturur"
-        ),
     )
     input_group.add_argument(
         "--github-codebase-docs",
@@ -134,53 +98,6 @@ def main():
         help="Ilk tekrar denemeden once beklenecek saniye",
     )
     parser.add_argument(
-        "--full-scan-bundle-dir",
-        default=".ai-review/full-scan-execution",
-        help=(
-            "Full scan manifestinin bulunduğu "
-            "bundle klasörü"
-        ),
-    )
-    parser.add_argument(
-        "--full-scan-results-dir",
-        default=".ai-review/full-scan-results",
-        help=(
-            "Full scan worker artifact'lerinin "
-            "bulunduğu klasör"
-        ),
-    )
-    parser.add_argument(
-        "--full-scan-payload-file",
-        help=(
-            "Full scan worker tarafından okunacak "
-            "shard payload JSON dosyası"
-        ),
-    )
-    parser.add_argument(
-        "--full-scan-result-file",
-        help=(
-            "Full scan worker sonucunun yazılacağı "
-            "JSON dosyası"
-        ),
-    )
-    parser.add_argument(
-        "--full-scan-max-files",
-        type=int,
-        default=200,
-        help=(
-            "Tek-job full scan sırasında okunacak en fazla "
-            "dosya sayısı; 0 sınırsız tarama yapar"
-        ),
-    )
-    parser.add_argument(
-        "--full-scan-output-dir",
-        default=".ai-review/full-scan-execution",
-        help=(
-            "Full scan shard manifest ve payload "
-            "dosyalarının yazılacağı klasör"
-        ),
-    )
-    parser.add_argument(
         "--docs-output-dir",
         default=".ai-review/docs-execution",
         help=(
@@ -219,160 +136,6 @@ def main():
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
-
-    if args.merge_full_scan_shards:
-        try:
-            result_pattern = os.path.join(
-                args.full_scan_results_dir,
-                "**",
-                "*.json",
-            )
-
-            result_paths = sorted(
-                glob.glob(
-                    result_pattern,
-                    recursive=True,
-                )
-            )
-
-            if not result_paths:
-                print(
-                    "Hata: Full scan worker sonucu "
-                    "bulunamadı.",
-                    file=sys.stderr,
-                )
-                return 1
-
-            review_result = merge_full_scan_bundle(
-                root_dir=".",
-                bundle_dir=args.full_scan_bundle_dir,
-                result_paths=result_paths,
-                max_files=None,
-            )
-
-            post_full_scan_result_as_issue(
-                review_result
-            )
-
-            stats = review_result.get(
-                "full_scan_stats",
-                {},
-            )
-
-            print("[AI Full Repository Scan Merge]")
-            print("-" * 50)
-            print(review_result.get("summary", ""))
-            print(
-                f"Tamamlanan shard: "
-                f"{stats.get('completed_shards', 0)}/"
-                f"{stats.get('shard_count', 0)}"
-            )
-            print(
-                f"Bulgu: "
-                f"{len(review_result.get('findings', []))}"
-            )
-            print(
-                "GitHub issue başarıyla oluşturuldu."
-            )
-            print("-" * 50)
-            return 0
-
-        except Exception as exc:
-            print(
-                "Hata: Full repository scan merge "
-                f"işlemi başarısız oldu: {exc}",
-                file=sys.stderr,
-            )
-            return 1
-
-    if args.run_full_scan_shard:
-        if not args.full_scan_payload_file:
-            print(
-                "Hata: --full-scan-payload-file "
-                "zorunludur.",
-                file=sys.stderr,
-            )
-            return 1
-
-        if not args.full_scan_result_file:
-            print(
-                "Hata: --full-scan-result-file "
-                "zorunludur.",
-                file=sys.stderr,
-            )
-            return 1
-
-        try:
-            result = run_full_scan_worker(
-                payload_path=args.full_scan_payload_file,
-                output_path=args.full_scan_result_file,
-                model=args.model,
-                max_review_lines=args.max_review_lines,
-                retries=args.retries,
-                retry_delay=args.retry_delay,
-            )
-
-            print("[AI Full Repository Scan Worker]")
-            print("-" * 50)
-            print(
-                f"Shard: {result.get('shard_id', 'unknown')}"
-            )
-            print(
-                f"Analiz birimi: "
-                f"{result.get('unit_count', 0)}"
-            )
-            print(
-                f"Bulgu: "
-                f"{len(result.get('findings', []))}"
-            )
-            print(
-                f"Sonuç dosyası: "
-                f"{args.full_scan_result_file}"
-            )
-            print("-" * 50)
-            return 0
-
-        except Exception as exc:
-            print(
-                "Hata: Full repository scan worker "
-                f"başarısız oldu: {exc}",
-                file=sys.stderr,
-            )
-            return 1
-
-    if args.prepare_full_scan:
-        try:
-            prepared = prepare_full_scan_bundle(
-                root_dir=".",
-                output_dir=args.full_scan_output_dir,
-                max_files=None,
-            )
-
-            manifest = prepared["manifest"]
-            state = prepared["state"]
-
-            print("[AI Full Repository Scan Prepare]")
-            print("-" * 50)
-            print(
-                f"{state.get('repository_files', 0)} repository dosyası, "
-                f"{state.get('selected_files', 0)} seçilen dosya, "
-                f"{state.get('planned_units', 0)} analiz birimi ve "
-                f"{manifest.get('shard_count', 0)} shard hazırlandı."
-            )
-            print(
-                f"Bundle klasörü: "
-                f"{args.full_scan_output_dir}"
-            )
-            print("-" * 50)
-            return 0
-
-        except Exception as exc:
-            print(
-                "Hata: Full repository scan shard "
-                f"hazırlığı başarısız oldu: {exc}",
-                file=sys.stderr,
-            )
-            return 1
 
     if args.merge_codebase_docs_shards:
         results_directory = Path(args.docs_results_dir)
@@ -520,41 +283,6 @@ def main():
         except Exception as exc:
             print(f"Hata: Codebase dokümantasyonu üretilemedi: {exc}", file=sys.stderr)
             return 1
-
-    if args.github_full_scan:
-        if args.full_scan_max_files < 0:
-            print(
-                "Hata: --full-scan-max-files negatif olamaz.",
-                file=sys.stderr,
-            )
-            return 1
-
-        review_result = analyze_full_repository(
-                max_files=(
-                    None
-                    if args.full_scan_max_files == 0
-                    else args.full_scan_max_files
-                ),
-            root_dir=".",
-            model=args.model,
-            max_review_lines=args.max_review_lines,
-            retries=args.retries,
-            retry_delay=args.retry_delay,
-        )
-
-        print("[AI Full Repository Review Sonuc Raporu]")
-        print("-" * 50)
-        print(format_review_report(review_result))
-        print("-" * 50)
-
-        try:
-            post_full_scan_result_as_issue(review_result)
-            print("GitHub issue basariyla olusturuldu.")
-        except GitHubReporterError as exc:
-            print(f"Hata: {exc}", file=sys.stderr)
-            return 1
-
-        return 0
 
     if (args.base and not args.head) or (args.head and not args.base):
         print("Hata: --base ve --head birlikte kullanilmalidir.", file=sys.stderr)
