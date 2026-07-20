@@ -1,6 +1,5 @@
 import json
 import os
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +11,7 @@ from agent.config import (
     DEFAULT_RETRIES,
     DEFAULT_RETRY_DELAY,
 )
+from agent.llm_client import call_model_with_retries
 from agent.full_scan_planner import build_full_scan_plan
 from agent.repo_scanner import find_reviewable_repo_files
 from agent.codebase_index import (
@@ -81,34 +81,14 @@ def _call_model_json(
     client=None,
 ):
     client = client or _create_client()
-    last_error = None
 
-    for attempt in range(retries + 1):
-        try:
-            return client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config={
-                    "temperature": 0,
-                    "response_mime_type": "application/json",
-                },
-            )
-        except Exception as exc:
-            last_error = exc
-
-            if attempt >= retries or not _is_transient_error(exc):
-                raise
-
-            wait_seconds = retry_delay * (2**attempt)
-            print(
-                "Codebase docs Gemini hatası alındı, "
-                f"{wait_seconds:.1f} saniye sonra tekrar denenecek "
-                f"({attempt + 1}/{retries})..."
-            )
-            time.sleep(wait_seconds)
-
-    raise last_error
-
+    return call_model_with_retries(
+        client=client,
+        prompt=prompt,
+        model=model,
+        retries=retries,
+        retry_delay=retry_delay,
+    )
 
 def _build_docs_prompt(scan_unit) -> str:
     files_payload = []
