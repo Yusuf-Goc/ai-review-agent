@@ -1,3 +1,4 @@
+import os
 import time
 from copy import deepcopy
 
@@ -695,34 +696,37 @@ def process_full_scan_units(
     }
 
 
-def analyze_full_repository(
-    root_dir=".",
-    client=None,
-    model=DEFAULT_MODEL,
-    max_review_lines=MAX_REVIEW_LINES,
-    retries=DEFAULT_RETRIES,
-    retry_delay=DEFAULT_RETRY_DELAY,
-    max_files=200,
-):
-    reviewable_files = find_reviewable_repo_files(root_dir=root_dir)
+def collect_full_scan_input(
+    root_dir: str = ".",
+    max_files: int | None = 200,
+) -> dict:
+    """
+    Repository dosyalarını toplar, içeriklerini okur ve scan planı üretir.
 
-    if not reviewable_files:
-        return {
-            "summary": (
-                "Repo içinde incelenebilir Python, SQL veya Go "
-                "dosyası bulunamadı."
-            ),
-            "findings": [],
-        }
+    Gemini çağrısı veya GitHub raporlaması yapmaz. Bu nedenle hem mevcut
+    tek-job full scan hem de matrix prepare aşaması tarafından kullanılabilir.
+    """
+    reviewable_files = find_reviewable_repo_files(
+        root_dir=root_dir,
+    )
 
-    selected_files = reviewable_files[:max_files]
+    if max_files is None:
+        selected_source_files = reviewable_files
+    else:
+        selected_source_files = reviewable_files[:max_files]
 
     file_items = []
+    read_errors = []
 
-    for file_info in selected_files:
+    for file_info in selected_source_files:
+        source_path = os.path.join(
+            root_dir,
+            file_info.path,
+        )
+
         try:
             with open(
-                file_info.path,
+                source_path,
                 "r",
                 encoding="utf-8",
             ) as source_file:
@@ -736,26 +740,62 @@ def analyze_full_repository(
                     "content": content,
                 }
             )
-        except UnicodeDecodeError:
-            continue
-        except Exception as exc:
-            file_items.append(
+
+        except UnicodeDecodeError as exc:
+            read_errors.append(
                 {
                     "path": file_info.path,
-                    "language": file_info.language,
-                    "line_count": 0,
-                    "content": "",
-                    "read_error": str(exc),
+                    "error": str(exc),
                 }
             )
 
-    readable_file_items = [
-        item
-        for item in file_items
-        if not item.get("read_error")
-    ]
+        except Exception as exc:
+            read_errors.append(
+                {
+                    "path": file_info.path,
+                    "error": str(exc),
+                }
+            )
 
-    scan_plan = build_full_scan_plan(readable_file_items)
+    scan_plan = build_full_scan_plan(file_items)
+
+    return {
+        "repository_files": len(reviewable_files),
+        "selected_files": len(selected_source_files),
+        "skipped_files": max(
+            0,
+            len(reviewable_files) - len(selected_source_files),
+        ),
+        "file_items": file_items,
+        "scan_plan": scan_plan,
+        "read_errors": read_errors,
+    }
+
+
+def analyze_full_repository(
+    root_dir=".",
+    client=None,
+    model=DEFAULT_MODEL,
+    max_review_lines=MAX_REVIEW_LINES,
+    retries=DEFAULT_RETRIES,
+    retry_delay=DEFAULT_RETRY_DELAY,
+    max_files=200,
+):
+    prepared = collect_full_scan_input(
+        root_dir=root_dir,
+        max_files=max_files,
+    )
+
+    if prepared["repository_files"] == 0:
+        return {
+            "summary": (
+                "Repo içinde incelenebilir Python, SQL veya Go "
+                "dosyası bulunamadı."
+            ),
+            "findings": [],
+        }
+
+    scan_plan = prepared["scan_plan"]
 
     processed = process_full_scan_units(
         scan_units=scan_plan,
@@ -768,14 +808,11 @@ def analyze_full_repository(
 
     findings = processed["findings"]
     stats = processed["stats"]
-    skipped_count = max(
-        0,
-        len(reviewable_files) - len(selected_files),
-    )
+    skipped_count = prepared["skipped_files"]
 
     summary = (
         "Full repo adaptive scan tamamlandı. "
-        f"{len(selected_files)} dosya seçildi, "
+        f"{prepared['selected_files']} dosya seçildi, "
         f"{stats['planned_units']} otomatik analiz birimi oluşturuldu. "
         f"{stats['first_pass_success']} birim ilk denemede, "
         f"{stats['second_pass_success']} birim ikinci denemede, "
@@ -801,7 +838,7 @@ def analyze_full_repository(
         "summary": summary,
         "findings": findings,
         "full_scan_stats": {
-            "selected_files": len(selected_files),
+            "selected_files": prepared["selected_files"],
             "planned_units": stats["planned_units"],
             "first_pass_success": stats[
                 "first_pass_success"
