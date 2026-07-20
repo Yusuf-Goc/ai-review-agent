@@ -530,60 +530,21 @@ def _split_unit_for_fallback(scan_unit) -> list[FullScanUnit]:
     return fallback_units
 
 
-def analyze_full_repository(
-    root_dir=".",
+def process_full_scan_units(
+    scan_units: list[FullScanUnit],
     client=None,
     model=DEFAULT_MODEL,
     max_review_lines=MAX_REVIEW_LINES,
     retries=DEFAULT_RETRIES,
     retry_delay=DEFAULT_RETRY_DELAY,
-    max_files=200,
-):
-    reviewable_files = find_reviewable_repo_files(root_dir=root_dir)
+) -> dict:
+    """
+    Full scan unit'lerini retry ve fallback davranışıyla işler.
 
-    if not reviewable_files:
-        return {
-            "summary": "Repo içinde incelenebilir Python, SQL veya Go dosyası bulunamadı.",
-            "findings": [],
-        }
-
-    selected_files = reviewable_files[:max_files]
-
-    file_items = []
-
-    for file_info in selected_files:
-        try:
-            with open(file_info.path, "r", encoding="utf-8") as source_file:
-                content = source_file.read()
-
-            file_items.append(
-                {
-                    "path": file_info.path,
-                    "language": file_info.language,
-                    "line_count": file_info.line_count,
-                    "content": content,
-                }
-            )
-        except UnicodeDecodeError:
-            continue
-        except Exception as exc:
-            file_items.append(
-                {
-                    "path": file_info.path,
-                    "language": file_info.language,
-                    "line_count": 0,
-                    "content": "",
-                    "read_error": str(exc),
-                }
-            )
-
-    readable_file_items = [
-        item for item in file_items
-        if not item.get("read_error")
-    ]
-
-    scan_plan = build_full_scan_plan(readable_file_items)
-
+    Bu fonksiyon repository taraması veya GitHub raporlaması yapmaz.
+    Matrix worker'lar ve mevcut tek-job akışı aynı işlem katmanını
+    kullanabilir.
+    """
     all_findings = []
 
     first_pass_success = 0
@@ -592,9 +553,8 @@ def analyze_full_repository(
 
     first_pass_failed = []
     second_pass_failed = []
-    final_failed = []
 
-    for scan_unit in scan_plan:
+    for scan_unit in scan_units:
         result = _analyze_full_scan_unit(
             scan_unit,
             client=client,
@@ -677,11 +637,19 @@ def analyze_full_repository(
                 }
             )
 
+    failed_units = []
+
     for failed_item in fallback_failed_units:
         scan_unit = failed_item["unit"]
         affected_files = _affected_files_for_unit(scan_unit)
 
-        final_failed.append(scan_unit)
+        failed_units.append(
+            {
+                "unit_id": scan_unit.unit_id,
+                "affected_files": affected_files,
+                "summary": failed_item["summary"],
+            }
+        )
 
         all_findings.append(
             {
@@ -690,18 +658,17 @@ def analyze_full_repository(
                 "severity": "medium",
                 "category": "logic_error",
                 "message": (
-                    f"{scan_unit.unit_id} AI analizi birkaç otomatik denemeye "
-                    "rağmen tamamlanamadı."
+                    f"{scan_unit.unit_id} AI analizi birkaç otomatik "
+                    "denemeye rağmen tamamlanamadı."
                 ),
                 "suggestion": (
-                    "Bu durum koddan çok AI sağlayıcı yoğunluğu veya geçici servis "
-                    "hatası kaynaklı olabilir. Workflow loglarını kontrol edin."
+                    "Bu durum koddan çok AI sağlayıcı yoğunluğu veya "
+                    "geçici servis hatası kaynaklı olabilir. Workflow "
+                    "loglarını kontrol edin."
                 ),
                 "source": "full_repo_ai_scan",
             }
         )
-
-    skipped_count = max(0, len(reviewable_files) - len(selected_files))
 
     all_findings = _deduplicate_findings(all_findings)
 
@@ -711,43 +678,156 @@ def analyze_full_repository(
         + fallback_pass_success
     )
 
-    summary = (
-        f"Full repo adaptive scan tamamlandı. "
-        f"{len(selected_files)} dosya seçildi, "
-        f"{len(scan_plan)} otomatik analiz birimi oluşturuldu. "
-        f"{first_pass_success} birim ilk denemede, "
-        f"{second_pass_success} birim ikinci denemede, "
-        f"{fallback_pass_success} birim küçük parçalara bölündükten sonra "
-        f"AI tarafından incelendi. "
-        f"{len(final_failed)} birim birkaç otomatik denemeye rağmen başarısız oldu."
-    )
-
-    if skipped_count:
-        summary += f" Limit nedeniyle {skipped_count} dosya atlandı."
-
-    if not all_findings:
-        summary += " Kritik bulgu bulunamadı."
-    else:
-        summary += f" Toplam {len(all_findings)} bulgu üretildi."
-
     return {
-        "summary": summary,
         "findings": all_findings,
-        "full_scan_stats": {
-            "selected_files": len(selected_files),
-            "planned_units": len(scan_plan),
+        "failed_units": failed_units,
+        "stats": {
+            "planned_units": len(scan_units),
             "first_pass_success": first_pass_success,
             "first_pass_failed": len(first_pass_failed),
             "second_pass_success": second_pass_success,
             "second_pass_failed": len(second_pass_failed),
             "fallback_units": len(fallback_units),
             "fallback_pass_success": fallback_pass_success,
-            "final_failed_units": len(final_failed),
+            "final_failed_units": len(failed_units),
             "total_successful_units": total_successful_units,
-            "skipped_files": skipped_count,
         },
     }
 
+
+def analyze_full_repository(
+    root_dir=".",
+    client=None,
+    model=DEFAULT_MODEL,
+    max_review_lines=MAX_REVIEW_LINES,
+    retries=DEFAULT_RETRIES,
+    retry_delay=DEFAULT_RETRY_DELAY,
+    max_files=200,
+):
+    reviewable_files = find_reviewable_repo_files(root_dir=root_dir)
+
+    if not reviewable_files:
+        return {
+            "summary": (
+                "Repo içinde incelenebilir Python, SQL veya Go "
+                "dosyası bulunamadı."
+            ),
+            "findings": [],
+        }
+
+    selected_files = reviewable_files[:max_files]
+
+    file_items = []
+
+    for file_info in selected_files:
+        try:
+            with open(
+                file_info.path,
+                "r",
+                encoding="utf-8",
+            ) as source_file:
+                content = source_file.read()
+
+            file_items.append(
+                {
+                    "path": file_info.path,
+                    "language": file_info.language,
+                    "line_count": file_info.line_count,
+                    "content": content,
+                }
+            )
+        except UnicodeDecodeError:
+            continue
+        except Exception as exc:
+            file_items.append(
+                {
+                    "path": file_info.path,
+                    "language": file_info.language,
+                    "line_count": 0,
+                    "content": "",
+                    "read_error": str(exc),
+                }
+            )
+
+    readable_file_items = [
+        item
+        for item in file_items
+        if not item.get("read_error")
+    ]
+
+    scan_plan = build_full_scan_plan(readable_file_items)
+
+    processed = process_full_scan_units(
+        scan_units=scan_plan,
+        client=client,
+        model=model,
+        max_review_lines=max_review_lines,
+        retries=retries,
+        retry_delay=retry_delay,
+    )
+
+    findings = processed["findings"]
+    stats = processed["stats"]
+    skipped_count = max(
+        0,
+        len(reviewable_files) - len(selected_files),
+    )
+
+    summary = (
+        "Full repo adaptive scan tamamlandı. "
+        f"{len(selected_files)} dosya seçildi, "
+        f"{stats['planned_units']} otomatik analiz birimi oluşturuldu. "
+        f"{stats['first_pass_success']} birim ilk denemede, "
+        f"{stats['second_pass_success']} birim ikinci denemede, "
+        f"{stats['fallback_pass_success']} birim küçük parçalara "
+        "bölündükten sonra AI tarafından incelendi. "
+        f"{stats['final_failed_units']} birim birkaç otomatik "
+        "denemeye rağmen başarısız oldu."
+    )
+
+    if skipped_count:
+        summary += (
+            f" Limit nedeniyle {skipped_count} dosya atlandı."
+        )
+
+    if not findings:
+        summary += " Kritik bulgu bulunamadı."
+    else:
+        summary += (
+            f" Toplam {len(findings)} bulgu üretildi."
+        )
+
+    return {
+        "summary": summary,
+        "findings": findings,
+        "full_scan_stats": {
+            "selected_files": len(selected_files),
+            "planned_units": stats["planned_units"],
+            "first_pass_success": stats[
+                "first_pass_success"
+            ],
+            "first_pass_failed": stats[
+                "first_pass_failed"
+            ],
+            "second_pass_success": stats[
+                "second_pass_success"
+            ],
+            "second_pass_failed": stats[
+                "second_pass_failed"
+            ],
+            "fallback_units": stats["fallback_units"],
+            "fallback_pass_success": stats[
+                "fallback_pass_success"
+            ],
+            "final_failed_units": stats[
+                "final_failed_units"
+            ],
+            "total_successful_units": stats[
+                "total_successful_units"
+            ],
+            "skipped_files": skipped_count,
+        },
+    }
 
 def analyze_source_code(
     code_text,
