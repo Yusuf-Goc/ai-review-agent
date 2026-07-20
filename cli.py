@@ -12,6 +12,7 @@ from agent.docs_commands import (
 from agent.docs_worker import run_docs_worker
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
+from agent.full_scan_commands import prepare_full_scan_bundle
 from agent.git_diff import GitDiffError, get_git_diff
 from agent.github_reporter import (
     GitHubReporterError,
@@ -52,6 +53,14 @@ def main():
         "--github-full-scan",
         action="store_true",
         help="GitHub Actions ortaminda tum repo kodlarini analiz eder ve issue olusturur",
+    )
+    input_group.add_argument(
+        "--prepare-full-scan",
+        action="store_true",
+        help=(
+            "Büyük repository full scan işlemi için "
+            "matrix shard bundle'ı hazırlar"
+        ),
     )
     input_group.add_argument(
         "--github-codebase-docs",
@@ -104,6 +113,14 @@ def main():
         help="Ilk tekrar denemeden once beklenecek saniye",
     )
     parser.add_argument(
+        "--full-scan-output-dir",
+        default=".ai-review/full-scan-execution",
+        help=(
+            "Full scan shard manifest ve payload "
+            "dosyalarının yazılacağı klasör"
+        ),
+    )
+    parser.add_argument(
         "--docs-output-dir",
         default=".ai-review/docs-execution",
         help=(
@@ -142,6 +159,40 @@ def main():
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
+
+    if args.prepare_full_scan:
+        try:
+            prepared = prepare_full_scan_bundle(
+                root_dir=".",
+                output_dir=args.full_scan_output_dir,
+                max_files=None,
+            )
+
+            manifest = prepared["manifest"]
+            state = prepared["state"]
+
+            print("[AI Full Repository Scan Prepare]")
+            print("-" * 50)
+            print(
+                f"{state.get('repository_files', 0)} repository dosyası, "
+                f"{state.get('selected_files', 0)} seçilen dosya, "
+                f"{state.get('planned_units', 0)} analiz birimi ve "
+                f"{manifest.get('shard_count', 0)} shard hazırlandı."
+            )
+            print(
+                f"Bundle klasörü: "
+                f"{args.full_scan_output_dir}"
+            )
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Full repository scan shard "
+                f"hazırlığı başarısız oldu: {exc}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.merge_codebase_docs_shards:
         results_directory = Path(args.docs_results_dir)
