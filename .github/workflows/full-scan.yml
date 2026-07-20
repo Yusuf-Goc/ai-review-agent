@@ -137,7 +137,7 @@ jobs:
           pip install -r ai-review-agent/requirements.txt
 
       - name: Run simple full repository scan
-        timeout-minutes: 90
+        timeout-minutes: 75
         working-directory: target-repo
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -147,8 +147,8 @@ jobs:
           python ../ai-review-agent/cli.py \
             --github-full-scan \
             --full-scan-max-files 0 \
-            --retries 4 \
-            --retry-delay 5
+            --retries 3 \
+            --retry-delay 3
 
   full-scan-workers:
     needs: prepare
@@ -160,7 +160,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 4
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     steps:
@@ -188,7 +188,7 @@ jobs:
           path: full-scan-execution
 
       - name: Run full scan shard
-        timeout-minutes: 90
+        timeout-minutes: 75
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -200,8 +200,8 @@ jobs:
               "full-scan-execution/${{ matrix.payload_file }}" \
             --full-scan-result-file \
               "full-scan-results/${{ matrix.shard_id }}.json" \
-            --retries 4 \
-            --retry-delay 5
+            --retries 3 \
+            --retry-delay 3
 
       - name: Upload shard result
         uses: actions/upload-artifact@v4
