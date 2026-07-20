@@ -336,4 +336,3 @@ def merge_full_scan_bundle(
         ],
         "full_scan_stats": full_scan_stats,
     }
-
