@@ -136,7 +136,7 @@ jobs:
           pip install -r ai-review-agent/requirements.txt
 
       - name: Run simple codebase documentation scan
-        timeout-minutes: 60
+        timeout-minutes: 75
         working-directory: target-repo
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -144,8 +144,8 @@ jobs:
         run: |
           python ../ai-review-agent/cli.py \
             --github-codebase-docs \
-            --retries 1 \
-            --retry-delay 2
+            --retries 3 \
+            --retry-delay 3
 
       - name: Commit codebase documentation
         working-directory: target-repo
@@ -184,7 +184,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 4
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     steps:
@@ -212,7 +212,7 @@ jobs:
           path: docs-execution
 
       - name: Run documentation shard
-        timeout-minutes: 45
+        timeout-minutes: 60
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -224,8 +224,8 @@ jobs:
               "docs-execution/${{ matrix.payload_file }}" \
             --docs-result-file \
               "docs-results/${{ matrix.shard_id }}.json" \
-            --retries 2 \
-            --retry-delay 2
+            --retries 3 \
+            --retry-delay 3
 
       - name: Upload shard result
         uses: actions/upload-artifact@v4
