@@ -146,6 +146,7 @@ jobs:
         run: |
           python ../ai-review-agent/cli.py \
             --github-full-scan \
+            --full-scan-max-files 0 \
             --retries 1 \
             --retry-delay 2
 

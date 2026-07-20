@@ -67,5 +67,16 @@ class FullScanWorkflowTests(unittest.TestCase):
         )
 
 
+    def test_small_path_scans_all_repository_files(self):
+        workflow = self.workflow_path.read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn(
+            "--full-scan-max-files 0",
+            workflow,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

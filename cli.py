@@ -164,6 +164,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--full-scan-max-files",
+        type=int,
+        default=200,
+        help=(
+            "Tek-job full scan sırasında okunacak en fazla "
+            "dosya sayısı; 0 sınırsız tarama yapar"
+        ),
+    )
+    parser.add_argument(
         "--full-scan-output-dir",
         default=".ai-review/full-scan-execution",
         help=(
@@ -513,7 +522,19 @@ def main():
             return 1
 
     if args.github_full_scan:
+        if args.full_scan_max_files < 0:
+            print(
+                "Hata: --full-scan-max-files negatif olamaz.",
+                file=sys.stderr,
+            )
+            return 1
+
         review_result = analyze_full_repository(
+                max_files=(
+                    None
+                    if args.full_scan_max_files == 0
+                    else args.full_scan_max_files
+                ),
             root_dir=".",
             model=args.model,
             max_review_lines=args.max_review_lines,

@@ -258,5 +258,58 @@ class CliFullScanModesTests(unittest.TestCase):
         )
 
 
+    def test_single_job_full_scan_accepts_unlimited_file_mode(self):
+        expected_result = {
+            "summary": "Sınırsız tarama tamamlandı.",
+            "findings": [],
+        }
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "cli.py",
+                    "--github-full-scan",
+                    "--full-scan-max-files",
+                    "0",
+                ],
+            ),
+            patch.dict(
+                "os.environ",
+                {
+                    "GITHUB_REPOSITORY": (
+                        "example/repository"
+                    ),
+                    "GITHUB_TOKEN": "test-token",
+                },
+                clear=False,
+            ),
+            patch(
+                "cli.analyze_full_repository",
+                return_value=expected_result,
+            ) as analyze_repository,
+            patch(
+                "cli.post_full_scan_result_as_issue",
+            ),
+            patch("builtins.print"),
+        ):
+            exit_code = cli.main()
+
+        self.assertEqual(exit_code, 0)
+
+        call_kwargs = (
+            analyze_repository.call_args.kwargs
+        )
+
+        self.assertIn(
+            "max_files",
+            call_kwargs,
+        )
+        self.assertIsNone(
+            call_kwargs["max_files"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
