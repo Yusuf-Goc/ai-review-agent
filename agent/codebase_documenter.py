@@ -24,10 +24,6 @@ from agent.codebase_index import (
     update_index_entry,
 )
 
-
-DOCS_SECOND_PASS_WAIT_SECONDS = 30
-
-
 def _create_client():
     load_dotenv()
 
@@ -82,8 +78,9 @@ def _call_model_json(
     model: str = DEFAULT_MODEL,
     retries: int = DEFAULT_RETRIES,
     retry_delay: float = DEFAULT_RETRY_DELAY,
+    client=None,
 ):
-    client = _create_client()
+    client = client or _create_client()
     last_error = None
 
     for attempt in range(retries + 1):
@@ -494,6 +491,8 @@ def process_docs_scan_units(
     merged_files_by_path: dict[str, dict] = {}
     failed_units: list[dict[str, str]] = []
 
+    client = _create_client() if scan_units else None
+
     for scan_unit in scan_units:
         prompt = _build_docs_prompt(scan_unit)
 
@@ -503,6 +502,7 @@ def process_docs_scan_units(
                 model=model,
                 retries=retries,
                 retry_delay=retry_delay,
+                client=client,
             )
 
             response_text = _extract_response_text(response)
