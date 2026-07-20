@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import time
 
@@ -108,6 +109,56 @@ def normalize_json_response(ai_output):
     return parsed
 
 
+
+class ModelRateLimitError(RuntimeError):
+    def __init__(
+        self,
+        message,
+        retry_after_seconds=None,
+    ):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class ModelDailyQuotaExceededError(ModelRateLimitError):
+    pass
+
+
+_RETRY_DELAY_PATTERNS = (
+    re.compile(
+        r"""retryDelay['"]?\s*:\s*['"]?(\d+(?:\.\d+)?)s""",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"""retry\s+in\s+(\d+(?:\.\d+)?)s""",
+        re.IGNORECASE,
+    ),
+)
+
+
+def is_daily_quota_error(exc):
+    message = str(exc).lower()
+
+    daily_markers = [
+        "generaterequestsperdayperprojectpermodel",
+        "requestsperday",
+        "requests per day",
+        "daily quota",
+    ]
+
+    return any(marker in message for marker in daily_markers)
+
+
+def extract_retry_delay_seconds(exc):
+    message = str(exc)
+
+    for pattern in _RETRY_DELAY_PATTERNS:
+        match = pattern.search(message)
+        if match:
+            return float(match.group(1))
+
+    return None
+
 def is_transient_model_error(exc):
     message = str(exc).lower()
     transient_markers = [
@@ -145,16 +196,36 @@ def call_model_with_retries(
                 },
             )
         except Exception as exc:
+            if is_daily_quota_error(exc):
+                raise ModelDailyQuotaExceededError(
+                    str(exc),
+                    retry_after_seconds=(
+                        extract_retry_delay_seconds(exc)
+                    ),
+                ) from exc
+
             last_error = exc
-            if attempt >= retries or not is_transient_model_error(exc):
+
+            if (
+                attempt >= retries
+                or not is_transient_model_error(exc)
+            ):
                 raise
 
-            wait_seconds = retry_delay * (2**attempt)
+            server_retry_delay = extract_retry_delay_seconds(exc)
+
+            if server_retry_delay is not None:
+                wait_seconds = server_retry_delay
+            else:
+                wait_seconds = retry_delay * (2**attempt)
+
             print(
-                f"Gecici Gemini hatasi alindi, {wait_seconds:.1f} saniye sonra tekrar denenecek "
+                "Gecici Gemini hatasi alindi, "
+                f"{wait_seconds:.1f} saniye sonra tekrar denenecek "
                 f"({attempt + 1}/{retries})...",
                 file=sys.stderr,
             )
             sleep_func(wait_seconds)
 
     raise last_error
+
