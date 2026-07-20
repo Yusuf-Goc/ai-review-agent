@@ -13,6 +13,7 @@ from agent.docs_worker import run_docs_worker
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, MAX_REVIEW_LINES, DependencyError, DiffParseError
 from agent.diff_parser import demo_diff, parse_diff
 from agent.full_scan_commands import prepare_full_scan_bundle
+from agent.full_scan_worker import run_full_scan_worker
 from agent.git_diff import GitDiffError, get_git_diff
 from agent.github_reporter import (
     GitHubReporterError,
@@ -60,6 +61,14 @@ def main():
         help=(
             "Büyük repository full scan işlemi için "
             "matrix shard bundle'ı hazırlar"
+        ),
+    )
+    input_group.add_argument(
+        "--run-full-scan-shard",
+        action="store_true",
+        help=(
+            "Tek bir full repository scan shard "
+            "payload'ını işler"
         ),
     )
     input_group.add_argument(
@@ -113,6 +122,20 @@ def main():
         help="Ilk tekrar denemeden once beklenecek saniye",
     )
     parser.add_argument(
+        "--full-scan-payload-file",
+        help=(
+            "Full scan worker tarafından okunacak "
+            "shard payload JSON dosyası"
+        ),
+    )
+    parser.add_argument(
+        "--full-scan-result-file",
+        help=(
+            "Full scan worker sonucunun yazılacağı "
+            "JSON dosyası"
+        ),
+    )
+    parser.add_argument(
         "--full-scan-output-dir",
         default=".ai-review/full-scan-execution",
         help=(
@@ -159,6 +182,61 @@ def main():
         help="Modele gonderilecek maksimum diff satiri",
     )
     args = parser.parse_args()
+
+    if args.run_full_scan_shard:
+        if not args.full_scan_payload_file:
+            print(
+                "Hata: --full-scan-payload-file "
+                "zorunludur.",
+                file=sys.stderr,
+            )
+            return 1
+
+        if not args.full_scan_result_file:
+            print(
+                "Hata: --full-scan-result-file "
+                "zorunludur.",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            result = run_full_scan_worker(
+                payload_path=args.full_scan_payload_file,
+                output_path=args.full_scan_result_file,
+                model=args.model,
+                max_review_lines=args.max_review_lines,
+                retries=args.retries,
+                retry_delay=args.retry_delay,
+            )
+
+            print("[AI Full Repository Scan Worker]")
+            print("-" * 50)
+            print(
+                f"Shard: {result.get('shard_id', 'unknown')}"
+            )
+            print(
+                f"Analiz birimi: "
+                f"{result.get('unit_count', 0)}"
+            )
+            print(
+                f"Bulgu: "
+                f"{len(result.get('findings', []))}"
+            )
+            print(
+                f"Sonuç dosyası: "
+                f"{args.full_scan_result_file}"
+            )
+            print("-" * 50)
+            return 0
+
+        except Exception as exc:
+            print(
+                "Hata: Full repository scan worker "
+                f"başarısız oldu: {exc}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.prepare_full_scan:
         try:

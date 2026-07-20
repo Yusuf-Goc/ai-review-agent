@@ -93,5 +93,62 @@ class CliFullScanModesTests(unittest.TestCase):
         )
 
 
+    def test_run_full_scan_shard_mode_writes_worker_result(self):
+        expected_result = {
+            "shard_id": "docs-shard-001",
+            "unit_count": 2,
+            "findings": [],
+            "failed_units": [],
+            "stats": {
+                "planned_units": 2,
+            },
+        }
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "cli.py",
+                    "--run-full-scan-shard",
+                    "--full-scan-payload-file",
+                    "/bundle/shards/docs-shard-001.json",
+                    "--full-scan-result-file",
+                    "/results/docs-shard-001.json",
+                    "--model",
+                    "test-model",
+                    "--max-review-lines",
+                    "450",
+                    "--retries",
+                    "2",
+                    "--retry-delay",
+                    "3",
+                ],
+            ),
+            patch(
+                "cli.run_full_scan_worker",
+                return_value=expected_result,
+                create=True,
+            ) as run_worker,
+            patch("builtins.print"),
+        ):
+            exit_code = cli.main()
+
+        self.assertEqual(exit_code, 0)
+
+        run_worker.assert_called_once_with(
+            payload_path=(
+                "/bundle/shards/docs-shard-001.json"
+            ),
+            output_path=(
+                "/results/docs-shard-001.json"
+            ),
+            model="test-model",
+            max_review_lines=450,
+            retries=2,
+            retry_delay=3.0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
