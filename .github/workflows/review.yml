@@ -63,21 +63,6 @@ jobs:
             --retries 4 \
             --retry-delay 3
 
-  full-repository-scan:
-    if: ${{ inputs.scan_mode == 'full' }}
-
-    permissions:
-      contents: read
-      issues: write
-
-    uses: ./.github/workflows/full-scan.yml
-
-    with:
-      agent_ref: ${{ inputs.agent_ref }}
-
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
   codebase-docs:
     if: ${{ inputs.scan_mode == 'docs' }}
 
