@@ -133,7 +133,10 @@ def main():
         "--max-review-lines",
         type=int,
         default=MAX_REVIEW_LINES,
-        help="Modele gonderilecek maksimum diff satiri",
+        help=(
+            "PR diff modunda batch basina hedef maksimum satir; "
+            "full code modunda toplam satir siniri"
+        ),
     )
     args = parser.parse_args()
 
@@ -396,6 +399,13 @@ def main():
             print("GitHub PR yorumu basariyla gonderildi.")
         except GitHubReporterError as exc:
             print(f"Hata: {exc}", file=sys.stderr)
+            return 1
+
+        if review_result.get("review_status") != "completed":
+            print(
+                "Hata: PR AI incelemesi tam olarak tamamlanamadi.",
+                file=sys.stderr,
+            )
             return 1
 
     return 0

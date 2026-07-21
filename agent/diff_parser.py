@@ -68,7 +68,10 @@ def parse_diff(raw_diff, max_review_lines=MAX_REVIEW_LINES):
             }
 
             for line in hunk:
-                if review_line_count >= max_review_lines:
+                if (
+                    max_review_lines is not None
+                    and review_line_count >= max_review_lines
+                ):
                     hunk_payload["lines"].append(
                         {
                             "kind": "truncated",
@@ -127,7 +130,10 @@ def parse_diff(raw_diff, max_review_lines=MAX_REVIEW_LINES):
         },
         "limits": {
             "max_review_lines": max_review_lines,
-            "truncated": review_line_count >= max_review_lines,
+            "truncated": (
+                max_review_lines is not None
+                and review_line_count >= max_review_lines
+            ),
         },
         "files": files,
     }

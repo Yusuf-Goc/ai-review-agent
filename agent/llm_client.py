@@ -104,6 +104,13 @@ def normalize_json_response(ai_output):
             "raw_response": ai_output,
         }
 
+    if not isinstance(parsed, dict):
+        return {
+            "summary": "Model beklenen JSON nesnesini donmedi.",
+            "findings": [],
+            "raw_response": ai_output,
+        }
+
     if "findings" not in parsed or not isinstance(parsed["findings"], list):
         parsed["findings"] = []
     if "summary" not in parsed:

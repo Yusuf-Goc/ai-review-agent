@@ -26,6 +26,8 @@ def _shorten_text(text: str, max_length: int = MAX_COMMENT_LENGTH) -> str:
 def format_github_markdown_report(review_result: dict) -> str:
     findings = review_result.get("findings", [])
     summary = review_result.get("summary", "İnceleme tamamlandı.")
+    review_status = review_result.get("review_status", "completed")
+    failed_batches = review_result.get("failed_batches", [])
 
     severity_counts = {
         "critical": 0,
@@ -51,12 +53,38 @@ def format_github_markdown_report(review_result: dict) -> str:
         "",
     ]
 
+    if review_status != "completed":
+        status_text = (
+            "İnceleme kısmen tamamlandı."
+            if review_status == "partial"
+            else "İnceleme tamamlanamadı."
+        )
+        lines.extend(
+            [
+                "### İnceleme Durumu",
+                "",
+                f"⚠️ **{status_text}** Bu sonuç temiz bir PR onayı olarak değerlendirilmemelidir.",
+            ]
+        )
+
+        for item in failed_batches:
+            lines.append(
+                f"- Batch {item.get('batch', '?')}: "
+                f"{item.get('reason', 'Bilinmeyen hata')}"
+            )
+
+        lines.append("")
+
     if not findings:
         lines.extend(
             [
                 "### Sonuç",
                 "",
-                "Kritik hata bulunamadı.",
+                (
+                    "Kritik hata bulunamadı."
+                    if review_status == "completed"
+                    else "Güvenilir bir ‘hata bulunamadı’ sonucu üretilemedi."
+                ),
             ]
         )
         return _shorten_text("\n".join(lines))
