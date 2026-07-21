@@ -16,7 +16,10 @@ def create_gemini_client():
             "google-genai paketi eksik. `pip install -r requirements.txt` calistirin."
         ) from exc
 
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key,
+        http_options={"timeout": 300_000},
+    )
 
 
 def build_review_prompt(review_payload):
