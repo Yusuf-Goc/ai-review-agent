@@ -56,10 +56,28 @@ Inceleme kurallari:
     alınmış proje bağlamını içerir. Bu belgeleri kodun amacı ve mimarisi için kullan.
 12. Markdown belgeleri destekleyici bağlamdır; diff ve kaynak kod teknik gerçekliktir.
     Belge ile kod çelişirse bulguyu kod ve diff üzerinden değerlendir.
+13. `changes` alanında bu batch içindeki anlamlı kod değişikliklerini hata olmasa bile açıkla.
+    Yalnızca diff ve verilen bağlamla desteklenen bilgileri yaz; repository genelinde
+    görmediğin kullanım veya etki noktalarını varmış gibi uydurma.
+14. Her değişiklik için mümkünse dosya, sembol, sembol tipi, değişiklik tipi,
+    önceki davranış, yeni davranış ve davranış etkisini kısa Türkçe metinlerle belirt.
+15. `findings` yalnızca gerçek hata ve riskler içindir. Normal ve doğru değişiklikleri
+    bulgu olarak yazma; bunları `changes` alanında açıkla.
 
 Beklenen JSON semasi:
 {{
   "summary": "Turkce kisa inceleme ozeti",
+  "changes": [
+    {{
+      "file": "dosya/yolu.py",
+      "symbol": "degisen_fonksiyon_veya_bos",
+      "symbol_type": "function|method|class|struct|variable|table|query|file|unknown",
+      "change_type": "added|modified|deleted|renamed|behavior_changed",
+      "before": "Degisiklikten onceki durum veya bos metin",
+      "after": "Degisiklikten sonraki durum",
+      "behavior_change": "Davranisa etkisi veya bos metin"
+    }}
+  ],
   "findings": [
     {{
       "file": "dosya/yolu.py",
@@ -115,10 +133,26 @@ def normalize_json_response(ai_output):
             "raw_response": ai_output,
         }
 
-    if "findings" not in parsed or not isinstance(parsed["findings"], list):
-        parsed["findings"] = []
-    if "summary" not in parsed:
+    if not isinstance(parsed.get("summary"), str):
         parsed["summary"] = "Inceleme tamamlandi."
+
+    changes = parsed.get("changes", [])
+    if not isinstance(changes, list):
+        changes = []
+    parsed["changes"] = [
+        item
+        for item in changes
+        if isinstance(item, dict)
+    ]
+
+    findings = parsed.get("findings", [])
+    if not isinstance(findings, list):
+        findings = []
+    parsed["findings"] = [
+        item
+        for item in findings
+        if isinstance(item, dict)
+    ]
 
     return parsed
 

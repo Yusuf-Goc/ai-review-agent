@@ -22,19 +22,21 @@ from agent.payload_builder import attach_static_findings, build_code_payload
 from agent.review_batcher import filter_reviewable_files, make_review_batches
 
 
-def _failed_review(summary, findings=None):
+def _failed_review(summary, findings=None, changes=None):
     return {
         "review_status": "failed",
         "summary": summary,
+        "changes": list(changes or []),
         "findings": list(findings or []),
         "errors": [summary],
     }
 
 
-def _completed_review(summary, findings=None):
+def _completed_review(summary, findings=None, changes=None):
     return {
         "review_status": "completed",
         "summary": summary,
+        "changes": list(changes or []),
         "findings": list(findings or []),
         "errors": [],
     }
@@ -55,6 +57,29 @@ def merge_findings(model_findings, local_findings):
             continue
         seen.add(key)
         merged.append(finding)
+
+    return merged
+
+
+def merge_changes(changes):
+    merged = []
+    seen = set()
+
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+
+        key = (
+            change.get("file"),
+            change.get("symbol"),
+            change.get("change_type"),
+            change.get("after"),
+            change.get("behavior_change"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(change)
 
     return merged
 
@@ -121,6 +146,7 @@ def analyze_payload(
         )
 
     normalized = normalize_json_response(ai_output)
+    normalized["changes"] = merge_changes(normalized.get("changes", []))
     normalized["findings"] = merge_findings(normalized.get("findings", []), local_findings)
 
     if normalized.get("raw_response") is not None:
@@ -215,6 +241,7 @@ def analyze_diff_in_batches(
         max_lines_per_batch=max_review_lines,
     )
 
+    all_changes = []
     all_findings = []
     summaries = []
     failed_batches = []
@@ -257,6 +284,7 @@ def analyze_diff_in_batches(
         summaries.append(
             f"Batch {index}/{len(batches)}: {result.get('summary', 'Ozet yok')}"
         )
+        all_changes.extend(result.get("changes", []))
         all_findings.extend(result.get("findings", []))
 
         if result.get("review_status") == "completed":
@@ -287,6 +315,7 @@ def analyze_diff_in_batches(
             f"{len(failed_batches)} batch tamamlanamadi. "
             + " ".join(summaries)
         ),
+        "changes": merge_changes(all_changes),
         "findings": all_findings,
         "errors": [item["reason"] for item in failed_batches],
         "failed_batches": failed_batches,

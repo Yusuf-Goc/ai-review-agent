@@ -23,11 +23,35 @@ def _shorten_text(text: str, max_length: int = MAX_COMMENT_LENGTH) -> str:
     )
 
 
+def _context_type_label(source_type: str) -> str:
+    labels = {
+        "codebase_summary": "Codebase Summary JSON",
+        "markdown": "README / Markdown dokümanları",
+        "none": "Yalnızca PR diff'i",
+    }
+    return labels.get(source_type, source_type or "Bilinmeyen")
+
+
 def format_github_markdown_report(review_result: dict) -> str:
-    findings = review_result.get("findings", [])
+    changes = [
+        item
+        for item in review_result.get("changes", [])
+        if isinstance(item, dict)
+    ]
+    findings = [
+        item
+        for item in review_result.get("findings", [])
+        if isinstance(item, dict)
+    ]
     summary = review_result.get("summary", "İnceleme tamamlandı.")
     review_status = review_result.get("review_status", "completed")
     failed_batches = review_result.get("failed_batches", [])
+    context_source_type = review_result.get("context_source_type", "none")
+    context_sources = [
+        source
+        for source in review_result.get("context_sources", [])
+        if isinstance(source, str) and source
+    ]
 
     severity_counts = {
         "critical": 0,
@@ -75,6 +99,49 @@ def format_github_markdown_report(review_result: dict) -> str:
 
         lines.append("")
 
+    if changes:
+        lines.extend(["### PR'da Ne Değişti?", ""])
+
+        for index, change in enumerate(changes, start=1):
+            file_name = change.get("file", "bilinmeyen dosya")
+            symbol = change.get("symbol") or "dosya geneli"
+            symbol_type = change.get("symbol_type", "unknown")
+            change_type = change.get("change_type", "modified")
+            before = change.get("before", "")
+            after = change.get("after", "")
+            behavior_change = change.get("behavior_change", "")
+
+            lines.extend(
+                [
+                    f"#### {index}. `{file_name}` — `{symbol}`",
+                    "",
+                    f"- **Tür:** `{symbol_type}` / `{change_type}`",
+                ]
+            )
+            if before:
+                lines.append(f"- **Önce:** {before}")
+            if after:
+                lines.append(f"- **Sonra:** {after}")
+            if behavior_change:
+                lines.append(f"- **Davranış etkisi:** {behavior_change}")
+            lines.append("")
+
+    lines.extend(
+        [
+            "### Kullanılan Bağlam",
+            "",
+            f"- **Bağlam türü:** {_context_type_label(context_source_type)}",
+        ]
+    )
+    if context_sources:
+        lines.append(
+            "- **Kaynaklar:** "
+            + ", ".join(f"`{source}`" for source in context_sources)
+        )
+    elif context_source_type == "none":
+        lines.append("- Ek proje özeti bulunamadığı için inceleme PR diff'i üzerinden yapıldı.")
+    lines.append("")
+
     if not findings:
         lines.extend(
             [
@@ -89,8 +156,7 @@ def format_github_markdown_report(review_result: dict) -> str:
         )
         return _shorten_text("\n".join(lines))
 
-    lines.append("### Bulgular")
-    lines.append("")
+    lines.extend(["### Bulgular", ""])
 
     for index, finding in enumerate(findings, start=1):
         file_name = finding.get("file", "bilinmeyen dosya")
