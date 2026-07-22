@@ -159,21 +159,56 @@ def analyze_diff_in_batches(
     retries=DEFAULT_RETRIES,
     retry_delay=DEFAULT_RETRY_DELAY,
     main_branch_file_context=None,
+    pr_context=None,
 ):
     try:
         base_payload = parse_diff(diff_text, max_review_lines=None)
     except (DependencyError, DiffParseError) as exc:
         return _failed_review(f"Inceleme baslatilamadi: {exc}")
 
-    if main_branch_file_context:
-        base_payload["main_branch_file_context"] = main_branch_file_context
+    if pr_context is None:
+        pr_context = {
+            "source_type": (
+                "codebase_summary"
+                if main_branch_file_context
+                else "none"
+            ),
+            "file_context": main_branch_file_context or {},
+            "project_documents": [],
+            "context_sources": [],
+        }
+
+    file_context = pr_context.get("file_context", {})
+    if not isinstance(file_context, dict):
+        file_context = {}
+
+    project_documents = pr_context.get("project_documents", [])
+    if not isinstance(project_documents, list):
+        project_documents = []
+
+    context_sources = pr_context.get("context_sources", [])
+    if not isinstance(context_sources, list):
+        context_sources = []
+
+    project_context = {
+        "source_type": pr_context.get("source_type", "none"),
+        "project_documents": project_documents,
+        "context_sources": context_sources,
+    }
+    base_payload["project_context"] = project_context
+
+    if file_context:
+        base_payload["main_branch_file_context"] = file_context
 
     reviewable_files = filter_reviewable_files(base_payload.get("files", []))
 
     if not reviewable_files:
-        return _completed_review(
+        result = _completed_review(
             "Incelenebilir Python, SQL veya Go dosya degisikligi bulunamadi."
         )
+        result["context_source_type"] = project_context["source_type"]
+        result["context_sources"] = context_sources
+        return result
 
     batches = make_review_batches(
         reviewable_files,
@@ -199,7 +234,7 @@ def analyze_diff_in_batches(
             "truncated": False,
         }
 
-        if main_branch_file_context:
+        if file_context:
             batch_paths = {
                 file_payload.get("path")
                 for file_payload in batch.files
@@ -207,7 +242,7 @@ def analyze_diff_in_batches(
 
             batch_payload["main_branch_file_context"] = {
                 path: context
-                for path, context in main_branch_file_context.items()
+                for path, context in file_context.items()
                 if path in batch_paths
             }
 
@@ -255,6 +290,8 @@ def analyze_diff_in_batches(
         "findings": all_findings,
         "errors": [item["reason"] for item in failed_batches],
         "failed_batches": failed_batches,
+        "context_source_type": project_context["source_type"],
+        "context_sources": context_sources,
     }
 
 

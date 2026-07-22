@@ -18,7 +18,7 @@ from agent.github_reporter import (
     post_review_result_to_pr,
 )
 from agent.payload_builder import attach_static_findings, build_code_payload
-from agent.pr_context import build_pr_file_context
+from agent.pr_context import build_pr_context
 from agent.report_formatter import format_review_report
 from agent.reviewer import analyze_diff_in_batches, analyze_source_code
 
@@ -304,7 +304,7 @@ def main():
     input_mode = "diff"
     file_name = "stdin.diff"
     language = args.language
-    main_branch_file_context = None
+    pr_context = None
 
     if args.demo:
         input_text = demo_diff()
@@ -324,7 +324,7 @@ def main():
             head_sha = require_env("HEAD_SHA")
 
             input_text = get_git_diff(base_sha, head_sha)
-            main_branch_file_context = build_pr_file_context(base_sha, head_sha)
+            pr_context = build_pr_context(base_sha, head_sha)
             input_mode = "diff"
             file_name = f"{base_sha}..{head_sha}"
         except Exception as exc:
@@ -386,7 +386,7 @@ def main():
             max_review_lines=args.max_review_lines,
             retries=args.retries,
             retry_delay=args.retry_delay,
-            main_branch_file_context=main_branch_file_context,
+            pr_context=pr_context,
         )
     print("[AI Code Reviewer Sonuc Raporu]")
     print("-" * 50)

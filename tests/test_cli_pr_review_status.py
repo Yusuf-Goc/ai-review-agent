@@ -31,7 +31,15 @@ class CliPrReviewStatusTests(unittest.TestCase):
                 clear=False,
             ),
             patch("cli.get_git_diff", return_value="diff content"),
-            patch("cli.build_pr_file_context", return_value={}),
+            patch(
+                "cli.build_pr_context",
+                return_value={
+                    "source_type": "none",
+                    "file_context": {},
+                    "project_documents": [],
+                    "context_sources": [],
+                },
+            ),
             patch(
                 "cli.analyze_diff_in_batches",
                 return_value=review_result,

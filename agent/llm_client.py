@@ -52,6 +52,10 @@ Inceleme kurallari:
     daha önce çıkarılmış özetidir. PR diff'ini bu bağlamı dikkate alarak yorumla.
     Ancak diff modunda yalnızca PR değişikliğinden kaynaklanan yeni riskleri raporla;
     eski kodu bağımsız bulgu olarak raporlama.
+11. JSON içinde `project_context` varsa README veya mimari Markdown belgelerinden
+    alınmış proje bağlamını içerir. Bu belgeleri kodun amacı ve mimarisi için kullan.
+12. Markdown belgeleri destekleyici bağlamdır; diff ve kaynak kod teknik gerçekliktir.
+    Belge ile kod çelişirse bulguyu kod ve diff üzerinden değerlendir.
 
 Beklenen JSON semasi:
 {{
