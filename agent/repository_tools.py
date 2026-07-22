@@ -3,6 +3,8 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from agent.config import get_bounded_int_env
+
 
 SOURCE_EXTENSIONS = {".py", ".go", ".sql"}
 DOCUMENT_EXTENSIONS = {".md", ".markdown"}
@@ -21,7 +23,12 @@ SKIP_PATH_PARTS = {
 }
 MAX_SYMBOL_LENGTH = 160
 MAX_SEARCH_RESULTS = 100
-MAX_READ_LINES = 240
+MAX_READ_LINES = get_bounded_int_env(
+    "AI_REVIEW_MAX_FILE_SECTION_LINES",
+    1_000,
+    minimum=1,
+    maximum=5_000,
+)
 
 
 class RepositoryToolError(RuntimeError):

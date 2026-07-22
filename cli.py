@@ -305,6 +305,8 @@ def main():
     file_name = "stdin.diff"
     language = args.language
     pr_context = None
+    base_sha = None
+    head_sha = None
 
     if args.demo:
         input_text = demo_diff()
@@ -332,9 +334,12 @@ def main():
             return 1
     elif args.base and args.head:
         try:
-            input_text = get_git_diff(args.base, args.head)
+            base_sha = args.base
+            head_sha = args.head
+            input_text = get_git_diff(base_sha, head_sha)
+            pr_context = build_pr_context(base_sha, head_sha)
             input_mode = "diff"
-            file_name = f"{args.base}..{args.head}"
+            file_name = f"{base_sha}..{head_sha}"
         except GitDiffError as exc:
             print(f"Hata: {exc}", file=sys.stderr)
             return 1
@@ -387,6 +392,9 @@ def main():
             retries=args.retries,
             retry_delay=args.retry_delay,
             pr_context=pr_context,
+            repo_root="." if base_sha and head_sha else None,
+            base_sha=base_sha,
+            head_sha=head_sha,
         )
     print("[AI Code Reviewer Sonuc Raporu]")
     print("-" * 50)

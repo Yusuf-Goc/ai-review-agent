@@ -63,6 +63,11 @@ Inceleme kurallari:
     önceki davranış, yeni davranış ve davranış etkisini kısa Türkçe metinlerle belirt.
 15. `findings` yalnızca gerçek hata ve riskler içindir. Normal ve doğru değişiklikleri
     bulgu olarak yazma; bunları `changes` alanında açıkla.
+16. JSON içinde `changed_symbols` varsa diff'ten deterministik olarak çıkarılmış değişen
+    fonksiyon, method, class, struct, değişken veya SQL nesneleridir.
+17. JSON içinde `repository_impact_context` varsa repository tool'lariyla base ve head
+    revisionlardan toplanmış çapraz dosya etki kanıtıdır. `changes` açıklamalarında bu
+    kanıtı kullan; başka dosya etkilerini kanıt olmadan uydurma.
 
 Beklenen JSON semasi:
 {{
@@ -225,23 +230,34 @@ def is_transient_model_error(exc):
 
 def call_model_with_retries(
     client,
-    prompt,
+    prompt=None,
     model=DEFAULT_MODEL,
     retries=DEFAULT_RETRIES,
     retry_delay=DEFAULT_RETRY_DELAY,
     sleep_func=time.sleep,
+    *,
+    contents=None,
+    config=None,
 ):
+    if prompt is not None and contents is not None:
+        raise ValueError("prompt ve contents ayni anda verilemez.")
+
+    request_contents = contents if contents is not None else prompt
+    if request_contents is None:
+        raise ValueError("Model cagrisi icin prompt veya contents gereklidir.")
+
+    request_config = config or {
+        "temperature": 0,
+        "response_mime_type": "application/json",
+    }
     last_error = None
 
     for attempt in range(retries + 1):
         try:
             return client.models.generate_content(
                 model=model,
-                contents=prompt,
-                config={
-                    "temperature": 0,
-                    "response_mime_type": "application/json",
-                },
+                contents=request_contents,
+                config=request_config,
             )
         except Exception as exc:
             if is_daily_quota_error(exc):

@@ -7,6 +7,25 @@ DEFAULT_RETRIES = 2
 DEFAULT_RETRY_DELAY = 2.0
 
 
+def get_bounded_int_env(
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        return default
+
+    return max(minimum, min(parsed, maximum))
+
+
 class ConfigurationError(Exception):
     """Raised when the agent cannot be configured safely."""
 

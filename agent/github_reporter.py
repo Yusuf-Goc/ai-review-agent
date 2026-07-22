@@ -43,13 +43,28 @@ def format_github_markdown_report(review_result: dict) -> str:
         for item in review_result.get("findings", [])
         if isinstance(item, dict)
     ]
+    impact_analysis = [
+        item
+        for item in review_result.get("impact_analysis", [])
+        if isinstance(item, dict)
+    ]
     summary = review_result.get("summary", "İnceleme tamamlandı.")
     review_status = review_result.get("review_status", "completed")
     failed_batches = review_result.get("failed_batches", [])
+    errors = [
+        error
+        for error in review_result.get("errors", [])
+        if isinstance(error, str) and error
+    ]
     context_source_type = review_result.get("context_source_type", "none")
     context_sources = [
         source
         for source in review_result.get("context_sources", [])
+        if isinstance(source, str) and source
+    ]
+    analysis_sources = [
+        source
+        for source in review_result.get("analysis_sources", [])
         if isinstance(source, str) and source
     ]
 
@@ -91,11 +106,17 @@ def format_github_markdown_report(review_result: dict) -> str:
             ]
         )
 
+        displayed_errors = set()
         for item in failed_batches:
+            reason = item.get('reason', 'Bilinmeyen hata')
+            displayed_errors.add(reason)
             lines.append(
-                f"- Batch {item.get('batch', '?')}: "
-                f"{item.get('reason', 'Bilinmeyen hata')}"
+                f"- Batch {item.get('batch', '?')}: {reason}"
             )
+
+        for error in errors:
+            if error not in displayed_errors:
+                lines.append(f"- {error}")
 
         lines.append("")
 
@@ -126,6 +147,47 @@ def format_github_markdown_report(review_result: dict) -> str:
                 lines.append(f"- **Davranış etkisi:** {behavior_change}")
             lines.append("")
 
+    if impact_analysis:
+        lines.extend(["### Çapraz Dosya Etkisi", ""])
+
+        for index, impact_item in enumerate(impact_analysis, start=1):
+            symbol = impact_item.get("symbol", "bilinmeyen sembol")
+            changed_file = impact_item.get("changed_file", "bilinmeyen dosya")
+            impact_text = impact_item.get("impact", "Etki açıklaması yok.")
+            definition_files = impact_item.get("definition_files", [])
+            base_refs = impact_item.get("reference_files_base", [])
+            head_refs = impact_item.get("reference_files_head", [])
+            evidence = impact_item.get("evidence", [])
+
+            lines.extend(
+                [
+                    f"#### {index}. `{symbol}` — `{changed_file}`",
+                    "",
+                    f"- **Etki:** {impact_text}",
+                ]
+            )
+            if definition_files:
+                lines.append(
+                    "- **Tanım dosyaları:** "
+                    + ", ".join(f"`{item}`" for item in definition_files)
+                )
+            if base_refs:
+                lines.append(
+                    "- **Base kullanımları:** "
+                    + ", ".join(f"`{item}`" for item in base_refs)
+                )
+            if head_refs:
+                lines.append(
+                    "- **Head kullanımları:** "
+                    + ", ".join(f"`{item}`" for item in head_refs)
+                )
+            if evidence:
+                lines.append(
+                    "- **Kanıt:** "
+                    + ", ".join(f"`{item}`" for item in evidence)
+                )
+            lines.append("")
+
     lines.extend(
         [
             "### Kullanılan Bağlam",
@@ -137,6 +199,11 @@ def format_github_markdown_report(review_result: dict) -> str:
         lines.append(
             "- **Kaynaklar:** "
             + ", ".join(f"`{source}`" for source in context_sources)
+        )
+    if analysis_sources:
+        lines.append(
+            "- **Repository analiz kaynakları:** "
+            + ", ".join(f"`{source}`" for source in analysis_sources)
         )
     elif context_source_type == "none":
         lines.append("- Ek proje özeti bulunamadığı için inceleme PR diff'i üzerinden yapıldı.")

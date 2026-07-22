@@ -9,6 +9,11 @@ def format_review_report(review_result):
         for item in review_result.get("findings", [])
         if isinstance(item, dict)
     ]
+    impact_analysis = [
+        item
+        for item in review_result.get("impact_analysis", [])
+        if isinstance(item, dict)
+    ]
     review_status = review_result.get("review_status", "completed")
     context_source_type = review_result.get("context_source_type", "none")
     context_sources = review_result.get("context_sources", [])
@@ -28,9 +33,20 @@ def format_review_report(review_result):
                 f"- {file_name} [{change_type}] {symbol}: {detail}"
             )
 
+    if impact_analysis:
+        lines.append("Capraz dosya etkileri:")
+        for item in impact_analysis:
+            symbol = item.get("symbol", "bilinmeyen sembol")
+            changed_file = item.get("changed_file", "bilinmeyen dosya")
+            impact_text = item.get("impact", "Etki aciklamasi yok.")
+            lines.append(f"- {changed_file} {symbol}: {impact_text}")
+
     lines.append(f"Baglam: {context_source_type}")
     if context_sources:
         lines.append("Baglam kaynaklari: " + ", ".join(context_sources))
+    analysis_sources = review_result.get("analysis_sources", [])
+    if analysis_sources:
+        lines.append("Repository analiz kaynaklari: " + ", ".join(analysis_sources))
 
     if not findings:
         if review_status == "completed":
