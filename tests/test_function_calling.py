@@ -9,6 +9,7 @@ from agent.function_calling import (
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_MAX_TOOL_RESULT_CHARS,
     RepositoryToolRuntime,
+    _build_function_response_part,
     _extract_function_calls,
     analyze_repository_impact,
 )
@@ -25,6 +26,11 @@ class FakePart:
         return cls(function_response=kwargs)
 
 
+class FakeFunctionResponse(dict):
+    def __init__(self, **kwargs):
+        super().__init__(kwargs)
+
+
 class FakeContent:
     def __init__(self, role, parts):
         self.role = role
@@ -38,6 +44,7 @@ class FakeConfig:
 
 class FakeTypes:
     Part = FakePart
+    FunctionResponse = FakeFunctionResponse
     Content = FakeContent
     GenerateContentConfig = FakeConfig
     Tool = FakeConfig
@@ -193,12 +200,28 @@ class FunctionCallingTests(unittest.TestCase):
         self.assertEqual(["consumer.py"], result["analysis_sources"])
 
         response_content = client.models.requests[1]["contents"][-1]
+        self.assertEqual("tool", response_content.role)
         function_response = response_content.parts[0].function_response
         self.assertEqual("call-1", function_response["id"])
         self.assertEqual(
             "find_symbol_references",
             function_response["name"],
         )
+
+    def test_function_response_builder_falls_back_for_legacy_sdk(self):
+        class LegacyTypes:
+            Part = FakePart
+
+        part = _build_function_response_part(
+            LegacyTypes,
+            name="find_symbol_references",
+            response={"ok": True},
+            call_id="call-legacy",
+        )
+
+        self.assertEqual("find_symbol_references", part.function_response["name"])
+        self.assertEqual({"ok": True}, part.function_response["response"])
+        self.assertNotIn("id", part.function_response)
 
     def test_accepts_json_inside_markdown_fence(self):
         fenced_payload = (

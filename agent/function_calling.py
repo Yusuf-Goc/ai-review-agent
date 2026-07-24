@@ -439,6 +439,34 @@ def _extract_function_calls(response: Any) -> list[Any]:
     return calls
 
 
+def _build_function_response_part(
+    types_module: Any,
+    *,
+    name: str,
+    response: dict[str, Any],
+    call_id: str | None = None,
+):
+    response_kwargs = {
+        "name": name,
+        "response": response,
+    }
+    if call_id:
+        response_kwargs["id"] = call_id
+
+    function_response_type = getattr(types_module, "FunctionResponse", None)
+    if function_response_type is not None:
+        try:
+            function_response = function_response_type(**response_kwargs)
+            return types_module.Part(function_response=function_response)
+        except (TypeError, ValueError):
+            pass
+
+    return types_module.Part.from_function_response(
+        name=name,
+        response=response,
+    )
+
+
 def _parse_json_object(text: str) -> dict[str, Any]:
     if not isinstance(text, str):
         raise TypeError("Model yaniti metin degil.")
@@ -590,20 +618,18 @@ def analyze_repository_impact(
                 name = getattr(function_call, "name", "")
                 args = dict(getattr(function_call, "args", None) or {})
                 result = runtime.execute(name, args)
-                response_kwargs = {
-                    "name": name,
-                    "response": result,
-                }
-                call_id = getattr(function_call, "id", None)
-                if call_id:
-                    response_kwargs["id"] = call_id
                 response_parts.append(
-                    types_module.Part.from_function_response(**response_kwargs)
+                    _build_function_response_part(
+                        types_module,
+                        name=name,
+                        response=result,
+                        call_id=getattr(function_call, "id", None),
+                    )
                 )
 
             contents.append(
                 types_module.Content(
-                    role="user",
+                    role="tool",
                     parts=response_parts,
                 )
             )
