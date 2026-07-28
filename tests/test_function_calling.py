@@ -8,6 +8,7 @@ from agent.function_calling import (
     DEFAULT_MAX_SOURCE_FILES,
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_MAX_TOOL_RESULT_CHARS,
+    FunctionCallingError,
     RepositoryToolRuntime,
     _build_function_response_part,
     _extract_function_calls,
@@ -75,10 +76,45 @@ class FakeClient:
 
 
 class FakeRuntime:
-    def __init__(self):
+    def __init__(self, evidence_files=None):
         self.tool_trace = []
         self.source_files = set()
         self.calls = []
+        self.evidence_files = evidence_files or ["consumer.py"]
+
+    def collect_reference_evidence(self, changed_symbols):
+        references = [
+            {
+                "path": path,
+                "line": index + 9,
+                "content": "calculate_total(100, 20)",
+            }
+            for index, path in enumerate(self.evidence_files)
+        ]
+        self.source_files.update(self.evidence_files)
+        self.tool_trace.append(
+            {
+                "name": "find_symbol_references",
+                "args": {"revision": "base"},
+                "status": "completed",
+                "origin": "required_reference_prefetch",
+            }
+        )
+        return {
+            "symbols": [
+                {
+                    "symbol": changed_symbols[0]["symbol"],
+                    "symbol_type": changed_symbols[0].get("symbol_type", "unknown"),
+                    "changed_file": changed_symbols[0].get("file", ""),
+                    "change_type": changed_symbols[0].get("change_type", "modified"),
+                    "references_base": references,
+                    "references_head": references,
+                }
+            ],
+            "requested_symbol_count": len(changed_symbols),
+            "collected_symbol_count": 1,
+            "truncated": False,
+        }
 
     def execute(self, name, args):
         self.calls.append((name, args))
@@ -207,6 +243,81 @@ class FunctionCallingTests(unittest.TestCase):
             "find_symbol_references",
             function_response["name"],
         )
+
+    def test_required_reference_evidence_is_merged_into_model_result(self):
+        payload = {
+            "summary": "Imza degisikligi incelendi.",
+            "impact_analysis": [
+                {
+                    "symbol": "calculate_total",
+                    "symbol_type": "function",
+                    "changed_file": "service.py",
+                    "change_type": "modified",
+                    "definition_files": ["service.py"],
+                    "reference_files_base": ["service.py"],
+                    "reference_files_head": ["service.py"],
+                    "impact": "Zorunlu parametre eklendi.",
+                    "evidence": ["service.py:5"],
+                }
+            ],
+        }
+        response = SimpleNamespace(
+            text=json.dumps(payload),
+            candidates=[
+                SimpleNamespace(
+                    content=FakeContent(
+                        role="model",
+                        parts=[FakePart(text=json.dumps(payload))],
+                    )
+                )
+            ],
+        )
+        client = FakeClient([response])
+        runtime = FakeRuntime(
+            evidence_files=["checkout.py", "reporting.py"]
+        )
+
+        result = analyze_repository_impact(
+            client=client,
+            repo_root=".",
+            base_sha="base",
+            head_sha="head",
+            changed_symbols=[
+                {
+                    "file": "service.py",
+                    "symbol": "calculate_total",
+                    "symbol_type": "function",
+                    "change_type": "modified",
+                }
+            ],
+            changed_paths=["service.py"],
+            context_source_type="none",
+            context_sources=[],
+            runtime=runtime,
+            types_module=FakeTypes,
+            retries=0,
+        )
+
+        impact = result["impact_analysis"][0]
+        self.assertEqual(
+            ["checkout.py", "reporting.py", "service.py"],
+            impact["reference_files_base"],
+        )
+        self.assertEqual(
+            ["checkout.py", "reporting.py", "service.py"],
+            impact["reference_files_head"],
+        )
+        self.assertIn("checkout.py:9", impact["evidence"])
+        self.assertIn("reporting.py:10", impact["evidence"])
+        self.assertEqual(
+            ["checkout.py", "reporting.py"],
+            result["analysis_sources"],
+        )
+
+        prompt = client.models.requests[0]["contents"][0].parts[0].text
+        self.assertIn('"required_reference_evidence"', prompt)
+        self.assertIn('"checkout.py"', prompt)
+        self.assertIn('"reporting.py"', prompt)
 
     def test_function_response_builder_falls_back_for_legacy_sdk(self):
         class LegacyTypes:
@@ -365,6 +476,61 @@ class RepositoryRuntimeTests(unittest.TestCase):
             end_line=1_049,
             max_lines=1_000,
         )
+
+    def test_required_prefetch_does_not_consume_model_tool_budget(self):
+        runtime = RepositoryToolRuntime(
+            repo_root=".",
+            base_sha="base",
+            head_sha="head",
+            max_tool_calls=1,
+        )
+        reference_result = {
+            "revision": "commit",
+            "symbol": "calculate_total",
+            "references": [
+                {
+                    "path": "consumer.py",
+                    "line": 9,
+                    "content": "calculate_total(100, 20)",
+                }
+            ],
+            "truncated": False,
+        }
+
+        with patch.object(
+            runtime,
+            "_references",
+            return_value=reference_result,
+        ):
+            evidence = runtime.collect_reference_evidence(
+                [
+                    {
+                        "file": "service.py",
+                        "symbol": "calculate_total",
+                        "symbol_type": "function",
+                        "change_type": "modified",
+                    }
+                ]
+            )
+
+        self.assertEqual(1, evidence["collected_symbol_count"])
+        self.assertEqual(2, len(runtime.tool_trace))
+
+        with patch.object(
+            runtime,
+            "_execute",
+            return_value={"path": "consumer.py", "matches": []},
+        ):
+            result = runtime.execute(
+                "search_symbol",
+                {"symbol": "calculate_total", "revision": "head"},
+            )
+            self.assertTrue(result["ok"])
+            with self.assertRaises(FunctionCallingError):
+                runtime.execute(
+                    "search_symbol",
+                    {"symbol": "calculate_total", "revision": "head"},
+                )
 
     def test_unknown_tool_returns_controlled_error(self):
         runtime = RepositoryToolRuntime(

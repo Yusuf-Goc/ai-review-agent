@@ -281,6 +281,105 @@ class RepositoryToolRuntime:
             "truncated": occurrences.get("truncated", False),
         }
 
+    def _register_result(
+        self,
+        result: Any,
+        trace: dict[str, Any],
+    ) -> Any:
+        result_paths = _collect_paths(result)
+        new_sources = self.source_files | result_paths
+        if len(new_sources) > self.max_source_files:
+            raise FunctionCallingError(
+                "Repository kaynak dosyasi limiti asildi. Daha dar bir arama yapin."
+            )
+        self.source_files = new_sources
+        trace["status"] = "completed"
+        trace["source_files"] = sorted(result_paths)
+        bounded = _bounded_result(result, self.max_result_chars)
+        trace["result_truncated"] = bool(
+            isinstance(bounded, dict) and bounded.get("truncated")
+        )
+        return bounded
+
+    def collect_reference_evidence(
+        self,
+        changed_symbols: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        evidence = []
+        truncated = len(changed_symbols) > DEFAULT_MAX_CHANGED_SYMBOLS
+
+        for changed_symbol in changed_symbols[:DEFAULT_MAX_CHANGED_SYMBOLS]:
+            if not isinstance(changed_symbol, dict):
+                continue
+
+            symbol = changed_symbol.get("symbol")
+            if not isinstance(symbol, str) or not symbol.strip():
+                continue
+
+            item = {
+                "symbol": symbol,
+                "symbol_type": changed_symbol.get("symbol_type", "unknown"),
+                "changed_file": changed_symbol.get("file", ""),
+                "change_type": changed_symbol.get("change_type", "modified"),
+                "references_base": [],
+                "references_head": [],
+            }
+
+            for revision_alias in ("base", "head"):
+                args = {
+                    "symbol": symbol,
+                    "revision": revision_alias,
+                    "max_results": 30,
+                }
+                trace = {
+                    "name": "find_symbol_references",
+                    "args": args,
+                    "status": "failed",
+                    "origin": "required_reference_prefetch",
+                }
+
+                try:
+                    result = self._references(
+                        symbol,
+                        self._revision(revision_alias),
+                        30,
+                    )
+                    bounded = self._register_result(result, trace)
+                    if isinstance(bounded, dict):
+                        references = bounded.get("references", [])
+                        if isinstance(references, list):
+                            item[f"references_{revision_alias}"] = [
+                                reference
+                                for reference in references
+                                if isinstance(reference, dict)
+                            ]
+                        item[f"{revision_alias}_truncated"] = bool(
+                            bounded.get("truncated")
+                        )
+                except (
+                    RepositoryToolError,
+                    FunctionCallingError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    trace["error"] = str(exc)
+                    item[f"{revision_alias}_error"] = str(exc)
+                finally:
+                    self.tool_trace.append(trace)
+
+            encoded = json.dumps(evidence + [item], ensure_ascii=False)
+            if len(encoded) > self.max_result_chars:
+                truncated = True
+                break
+            evidence.append(item)
+
+        return {
+            "symbols": evidence,
+            "requested_symbol_count": len(changed_symbols),
+            "collected_symbol_count": len(evidence),
+            "truncated": truncated,
+        }
+
     def _execute(self, name: str, args: dict[str, Any]) -> Any:
         if name == "search_symbol":
             return search_symbol(
@@ -339,7 +438,12 @@ class RepositoryToolRuntime:
         raise RepositoryToolError(f"Bilinmeyen repository tool: {name}")
 
     def execute(self, name: str, args: dict[str, Any] | None) -> dict[str, Any]:
-        if len(self.tool_trace) >= self.max_tool_calls:
+        model_tool_calls = sum(
+            1
+            for item in self.tool_trace
+            if item.get("origin", "model") == "model"
+        )
+        if model_tool_calls >= self.max_tool_calls:
             raise FunctionCallingError("Repository tool cagrisi limiti asildi.")
 
         safe_args = dict(args or {})
@@ -347,23 +451,12 @@ class RepositoryToolRuntime:
             "name": name,
             "args": safe_args,
             "status": "failed",
+            "origin": "model",
         }
 
         try:
             result = self._execute(name, safe_args)
-            result_paths = _collect_paths(result)
-            new_sources = self.source_files | result_paths
-            if len(new_sources) > self.max_source_files:
-                raise FunctionCallingError(
-                    "Repository kaynak dosyasi limiti asildi. Daha dar bir arama yapin."
-                )
-            self.source_files = new_sources
-            trace["status"] = "completed"
-            trace["source_files"] = sorted(result_paths)
-            bounded = _bounded_result(result, self.max_result_chars)
-            trace["result_truncated"] = bool(
-                isinstance(bounded, dict) and bounded.get("truncated")
-            )
+            bounded = self._register_result(result, trace)
             return {"ok": True, "result": bounded}
         except (RepositoryToolError, FunctionCallingError, TypeError, ValueError) as exc:
             trace["error"] = str(exc)
@@ -377,6 +470,7 @@ def build_repository_impact_prompt(
     changed_paths: list[str],
     context_source_type: str,
     context_sources: list[str],
+    required_reference_evidence: dict[str, Any] | None = None,
 ) -> str:
     payload = {
         "changed_symbols": changed_symbols[:DEFAULT_MAX_CHANGED_SYMBOLS],
@@ -385,6 +479,12 @@ def build_repository_impact_prompt(
         "changed_paths": changed_paths,
         "context_source_type": context_source_type,
         "context_sources": context_sources,
+        "required_reference_evidence": required_reference_evidence or {
+            "symbols": [],
+            "requested_symbol_count": 0,
+            "collected_symbol_count": 0,
+            "truncated": False,
+        },
     }
     payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -393,13 +493,15 @@ Sen kidemli bir repository etki analizi ajanisin. Asagidaki PR sembollerinin
 base ve head durumlarini repository tool'lariyla arastir.
 
 Kurallar:
-1. Degisen her anlamli sembol icin tanim ve kullanim noktalarini base ve head revisionlarda kontrol et.
-2. Fonksiyon veya degiskenin baska dosyalardaki kullanimlarini kanit olmadan uydurma.
-3. Gerekirse compare_symbol, find_symbol_references, read_file_section ve search_project_docs kullan.
-4. README ve Markdown destekleyici baglamdir; kaynak kod teknik gercekliktir.
-5. Yalnizca PR degisikliginin capraz dosya etkisini acikla.
-6. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
-7. Tum aciklama metinleri Turkce olsun.
+1. required_reference_evidence Python tarafinda zorunlu olarak toplanmis base/head kullanim kanitidir.
+2. Bu kanittaki tum dis dosya kullanimlarini ilgili impact kaydina ekle ve uyumlulugunu degerlendir.
+3. Degisen her anlamli sembol icin tanim ve kullanim noktalarini base ve head revisionlarda kontrol et.
+4. Fonksiyon veya degiskenin baska dosyalardaki kullanimlarini kanit olmadan uydurma.
+5. Gerekirse compare_symbol, find_symbol_references, read_file_section ve search_project_docs kullan.
+6. README ve Markdown destekleyici baglamdir; kaynak kod teknik gercekliktir.
+7. Yalnizca PR degisikliginin capraz dosya etkisini acikla.
+8. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
+9. Tum aciklama metinleri Turkce olsun.
 
 Beklenen JSON semasi:
 {{
@@ -521,6 +623,134 @@ def _normalize_impact_response(text: str) -> dict[str, Any]:
     }
 
 
+
+def _reference_paths(references: Any) -> list[str]:
+    if not isinstance(references, list):
+        return []
+    return sorted(
+        {
+            item.get("path")
+            for item in references
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+    )
+
+
+def _reference_evidence_lines(references: Any) -> list[str]:
+    if not isinstance(references, list):
+        return []
+
+    evidence = set()
+    for item in references:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        line = item.get("line")
+        if isinstance(path, str) and isinstance(line, int):
+            evidence.add(f"{path}:{line}")
+    return sorted(evidence)
+
+
+def _merge_required_reference_evidence(
+    normalized: dict[str, Any],
+    required_reference_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    impacts = normalized.get("impact_analysis", [])
+    if not isinstance(impacts, list):
+        impacts = []
+
+    impacts = [item for item in impacts if isinstance(item, dict)]
+    evidence_items = required_reference_evidence.get("symbols", [])
+    if not isinstance(evidence_items, list):
+        evidence_items = []
+
+    for evidence_item in evidence_items:
+        if not isinstance(evidence_item, dict):
+            continue
+
+        symbol = evidence_item.get("symbol")
+        changed_file = evidence_item.get("changed_file", "")
+        base_references = evidence_item.get("references_base", [])
+        head_references = evidence_item.get("references_head", [])
+        base_files = _reference_paths(base_references)
+        head_files = _reference_paths(head_references)
+        evidence_lines = sorted(
+            set(
+                _reference_evidence_lines(base_references)
+                + _reference_evidence_lines(head_references)
+            )
+        )
+
+        matching_impact = next(
+            (
+                item
+                for item in impacts
+                if item.get("symbol") == symbol
+                and (
+                    not changed_file
+                    or not item.get("changed_file")
+                    or item.get("changed_file") == changed_file
+                )
+            ),
+            None,
+        )
+
+        external_files = sorted(
+            (set(base_files) | set(head_files)) - {changed_file}
+        )
+        if (
+            matching_impact is None
+            and external_files
+            and normalized.get("status") == "completed"
+        ):
+            matching_impact = {
+                "symbol": symbol,
+                "symbol_type": evidence_item.get("symbol_type", "unknown"),
+                "changed_file": changed_file,
+                "change_type": evidence_item.get("change_type", "modified"),
+                "definition_files": [changed_file] if changed_file else [],
+                "reference_files_base": [],
+                "reference_files_head": [],
+                "impact": (
+                    "Repository aramasinda degisen dosya disinda kullanimlar "
+                    "bulundu. Bu cagri ve kullanim noktalarinin degisiklikle "
+                    "uyumlulugu kontrol edilmelidir."
+                ),
+                "evidence": [],
+            }
+            impacts.append(matching_impact)
+
+        if matching_impact is None:
+            continue
+
+        matching_impact["reference_files_base"] = sorted(
+            set(matching_impact.get("reference_files_base", [])) | set(base_files)
+        )
+        matching_impact["reference_files_head"] = sorted(
+            set(matching_impact.get("reference_files_head", [])) | set(head_files)
+        )
+        matching_impact["evidence"] = sorted(
+            set(matching_impact.get("evidence", [])) | set(evidence_lines)
+        )
+
+    normalized["impact_analysis"] = impacts
+    return normalized
+
+
+def _finalize_impact_result(
+    normalized: dict[str, Any],
+    runtime: RepositoryToolRuntime,
+    required_reference_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    normalized = _merge_required_reference_evidence(
+        normalized,
+        required_reference_evidence,
+    )
+    normalized["tool_trace"] = runtime.tool_trace
+    normalized["analysis_sources"] = sorted(runtime.source_files)
+    return normalized
+
+
 def _tool_config(types_module: Any, mode: str):
     return types_module.GenerateContentConfig(
         temperature=0,
@@ -576,11 +806,15 @@ def analyze_repository_impact(
         base_sha=base_sha,
         head_sha=head_sha,
     )
+    required_reference_evidence = runtime.collect_reference_evidence(
+        changed_symbols
+    )
     prompt = build_repository_impact_prompt(
         changed_symbols,
         changed_paths,
         context_source_type,
         context_sources,
+        required_reference_evidence,
     )
     contents = [
         types_module.Content(
@@ -606,9 +840,11 @@ def analyze_repository_impact(
             if not function_calls:
                 text = extract_response_text(response)
                 normalized = _normalize_impact_response(text)
-                normalized["tool_trace"] = runtime.tool_trace
-                normalized["analysis_sources"] = sorted(runtime.source_files)
-                return normalized
+                return _finalize_impact_result(
+                    normalized,
+                    runtime,
+                    required_reference_evidence,
+                )
 
             model_content = response.candidates[0].content
             contents.append(model_content)
@@ -667,6 +903,8 @@ def analyze_repository_impact(
             "errors": [f"Repository etki analizi tamamlanamadi: {exc}"],
         }
 
-    normalized["tool_trace"] = runtime.tool_trace
-    normalized["analysis_sources"] = sorted(runtime.source_files)
-    return normalized
+    return _finalize_impact_result(
+        normalized,
+        runtime,
+        required_reference_evidence,
+    )
