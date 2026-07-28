@@ -43,6 +43,82 @@ class SymbolAnalysisTests(unittest.TestCase):
         self.assertEqual("modified", result[0]["change_type"])
         self.assertEqual(["hunk_header"], result[0]["detected_from"])
 
+    def test_ignores_hunk_header_when_other_declarations_change(self):
+        payload = {
+            "files": [
+                {
+                    "path": "checkout.go",
+                    "change_type": "modified",
+                    "hunks": [
+                        {
+                            "section_header": (
+                                "func AddCheckoutItem(session *CheckoutSession, "
+                                "item CheckoutItem)"
+                            ),
+                            "source_start": 80,
+                            "target_start": 80,
+                            "lines": [
+                                {
+                                    "kind": "removed",
+                                    "source_line": 84,
+                                    "content": (
+                                        "func NewCheckoutSession(id string, "
+                                        "customerID string) CheckoutSession {"
+                                    ),
+                                },
+                                {
+                                    "kind": "added",
+                                    "target_line": 84,
+                                    "content": (
+                                        "func NewCheckoutSession(id string, "
+                                        "customerID string, locale string) "
+                                        "CheckoutSession {"
+                                    ),
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result = extract_changed_symbols(payload)
+        symbols = {item["symbol"] for item in result}
+
+        self.assertEqual({"NewCheckoutSession"}, symbols)
+        self.assertNotIn("AddCheckoutItem", symbols)
+
+    def test_ignores_comment_only_hunk_header(self):
+        payload = {
+            "files": [
+                {
+                    "path": "pricing.go",
+                    "change_type": "modified",
+                    "hunks": [
+                        {
+                            "section_header": (
+                                "func ApplyFixedDiscount(subtotal int, "
+                                "discount int) int"
+                            ),
+                            "source_start": 118,
+                            "target_start": 118,
+                            "lines": [
+                                {
+                                    "kind": "removed",
+                                    "source_line": 121,
+                                    "content": (
+                                        "// pricing.go test filler line 121"
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        self.assertEqual([], extract_changed_symbols(payload))
+
     def test_merges_removed_and_added_go_method_declaration(self):
         payload = {
             "files": [

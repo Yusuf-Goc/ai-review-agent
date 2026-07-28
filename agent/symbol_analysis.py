@@ -106,6 +106,21 @@ def _changed_lines(hunk: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _is_comment_or_blank(path: str, line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+
+    extension = PurePosixPath(path).suffix.lower()
+    if extension == ".py":
+        return stripped.startswith("#")
+    if extension == ".go":
+        return stripped.startswith(("//", "/*", "*", "*/"))
+    if extension == ".sql":
+        return stripped.startswith(("--", "/*", "*", "*/"))
+    return False
+
+
 def extract_changed_symbols(review_payload: dict[str, Any]) -> list[dict[str, Any]]:
     events: dict[tuple[str, str, str], dict[str, Any]] = {}
 
@@ -120,9 +135,38 @@ def extract_changed_symbols(review_payload: dict[str, Any]) -> list[dict[str, An
             if not changed_lines:
                 continue
 
+            changed_declarations = {
+                detected
+                for line in changed_lines
+                if (detected := detect_symbol(path, line.get("content", "")))
+            }
             section_header = hunk.get("section_header") or ""
             section_symbol = detect_symbol(path, section_header)
-            if section_symbol:
+
+            # Unified diff hunk basligi en yakin onceki fonksiyonu gosterebilir.
+            # Hunk icinde baska bildirimler acikca degisiyorsa bu baslik yalnizca
+            # konum baglamidir; onu degisen sembol saymak rapora gurultu ekler.
+            # Bildirim bulunmayan body-only hunklarda ise baslik gercek sembol
+            # baglamini sagladigi icin korunur.
+            has_meaningful_body_change = any(
+                not detect_symbol(path, line.get("content", ""))
+                and not _is_comment_or_blank(
+                    path,
+                    line.get("content", ""),
+                )
+                for line in changed_lines
+            )
+            include_section_symbol = bool(
+                section_symbol
+                and (
+                    section_symbol in changed_declarations
+                    or (
+                        not changed_declarations
+                        and has_meaningful_body_change
+                    )
+                )
+            )
+            if include_section_symbol:
                 name, symbol_type = section_symbol
                 key = (path, name, symbol_type)
                 event = events.setdefault(

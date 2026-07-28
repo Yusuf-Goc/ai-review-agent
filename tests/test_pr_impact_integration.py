@@ -3,7 +3,10 @@ from unittest.mock import patch
 
 from agent.github_reporter import format_github_markdown_report
 from agent.review_batcher import ReviewBatch
-from agent.reviewer import analyze_diff_in_batches
+from agent.reviewer import (
+    analyze_diff_in_batches,
+    apply_breaking_change_severity_policy,
+)
 
 
 class PrImpactIntegrationTests(unittest.TestCase):
@@ -104,6 +107,65 @@ class PrImpactIntegrationTests(unittest.TestCase):
         self.assertEqual([impact], result["impact_analysis"])
         self.assertEqual(["consumer.py", "service.py"], result["analysis_sources"])
         self.assertEqual("completed", result["review_status"])
+
+    def test_breaking_change_severity_requires_external_reference(self):
+        changed_symbols = [
+            {
+                "file": "checkout.go",
+                "symbol": "NewCheckoutSession",
+                "source_lines": [83],
+                "target_lines": [84],
+            },
+            {
+                "file": "pricing.go",
+                "symbol": "CalculateTotal",
+                "source_lines": [68],
+                "target_lines": [69],
+            },
+        ]
+        impacts = [
+            {
+                "symbol": "NewCheckoutSession",
+                "symbol_type": "function",
+                "changed_file": "checkout.go",
+                "reference_files_base": ["checkout.go"],
+                "reference_files_head": ["checkout.go"],
+                "external_reference_files": [],
+            },
+            {
+                "symbol": "CalculateTotal",
+                "symbol_type": "function",
+                "changed_file": "pricing.go",
+                "reference_files_base": ["checkout.go"],
+                "reference_files_head": ["checkout.go"],
+                "external_reference_files": ["checkout.go"],
+            },
+        ]
+        findings = [
+            {
+                "file": "checkout.go",
+                "line": 84,
+                "severity": "critical",
+                "category": "breaking_change",
+                "message": "NewCheckoutSession imzasi degisti.",
+            },
+            {
+                "file": "pricing.go",
+                "line": 69,
+                "severity": "critical",
+                "category": "breaking_change",
+                "message": "CalculateTotal checkout.go cagrisini kiriyor.",
+            },
+        ]
+
+        normalized = apply_breaking_change_severity_policy(
+            findings,
+            impacts,
+            changed_symbols,
+        )
+
+        self.assertEqual("high", normalized[0]["severity"])
+        self.assertEqual("critical", normalized[1]["severity"])
 
     def test_impact_failure_marks_otherwise_completed_review_partial(self):
         payload, file_payload = self._payload()

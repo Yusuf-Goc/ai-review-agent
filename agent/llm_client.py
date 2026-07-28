@@ -68,6 +68,10 @@ Inceleme kurallari:
 17. JSON içinde `repository_impact_context` varsa repository tool'lariyla base ve head
     revisionlardan toplanmış çapraz dosya etki kanıtıdır. `changes` açıklamalarında bu
     kanıtı kullan; başka dosya etkilerini kanıt olmadan uydurma.
+18. Fonksiyon veya method imza değişikliğinde `external_reference_files` boş değilse
+    ve eski çağrı gerçekten uyumsuzsa critical breaking_change yazabilirsin. Bu alan
+    boşsa repository içinde kırılan çağrı kanıtlanmamıştır; public API riski varsa
+    severity en fazla high olmalıdır. Olası harici tüketici varsayımıyla critical yazma.
 
 Beklenen JSON semasi:
 {{

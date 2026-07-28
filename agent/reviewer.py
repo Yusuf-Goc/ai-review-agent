@@ -86,6 +86,103 @@ def merge_changes(changes):
     return merged
 
 
+def _string_values(value):
+    if not isinstance(value, list):
+        return set()
+    return {
+        item
+        for item in value
+        if isinstance(item, str) and item
+    }
+
+
+def _external_reference_files(impact):
+    changed_file = impact.get("changed_file")
+    references = _string_values(
+        impact.get("external_reference_files", [])
+    )
+    references.update(
+        _string_values(impact.get("reference_files_base", []))
+    )
+    references.update(
+        _string_values(impact.get("reference_files_head", []))
+    )
+    references.discard(changed_file)
+    return references
+
+
+def _finding_matches_symbol(finding, impact, changed_symbols):
+    symbol = impact.get("symbol")
+    changed_file = impact.get("changed_file")
+    if not symbol or finding.get("file") != changed_file:
+        return False
+
+    message = finding.get("message", "")
+    if isinstance(message, str) and symbol in message:
+        return True
+
+    finding_line = finding.get("line")
+    if not isinstance(finding_line, int):
+        return False
+
+    for changed_symbol in changed_symbols:
+        if (
+            changed_symbol.get("file") == changed_file
+            and changed_symbol.get("symbol") == symbol
+            and finding_line
+            in set(changed_symbol.get("source_lines", []))
+            | set(changed_symbol.get("target_lines", []))
+        ):
+            return True
+
+    return False
+
+
+def apply_breaking_change_severity_policy(
+    findings,
+    impact_analysis,
+    changed_symbols,
+):
+    normalized = []
+    impacts = [
+        impact
+        for impact in impact_analysis
+        if isinstance(impact, dict)
+        and impact.get("symbol_type") in {"function", "method"}
+    ]
+
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+
+        updated = dict(finding)
+        if (
+            updated.get("category") == "breaking_change"
+            and updated.get("severity") == "critical"
+        ):
+            matching_impact = next(
+                (
+                    impact
+                    for impact in impacts
+                    if _finding_matches_symbol(
+                        updated,
+                        impact,
+                        changed_symbols,
+                    )
+                ),
+                None,
+            )
+            if (
+                matching_impact is not None
+                and not _external_reference_files(matching_impact)
+            ):
+                updated["severity"] = "high"
+
+        normalized.append(updated)
+
+    return normalized
+
+
 def analyze_payload(
     review_payload,
     client=None,
@@ -393,7 +490,11 @@ def analyze_diff_in_batches(
             + " ".join(summaries)
         ),
         "changes": merge_changes(all_changes),
-        "findings": all_findings,
+        "findings": apply_breaking_change_severity_policy(
+            all_findings,
+            impact_result.get("impact_analysis", []),
+            changed_symbols,
+        ),
         "errors": (
             [item["reason"] for item in failed_batches]
             + list(impact_errors)

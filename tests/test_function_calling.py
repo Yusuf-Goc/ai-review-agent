@@ -311,6 +311,15 @@ class FunctionCallingTests(unittest.TestCase):
         self.assertIn("reporting.py:10", impact["evidence"])
         self.assertEqual(
             ["checkout.py", "reporting.py"],
+            impact["external_reference_files"],
+        )
+        self.assertTrue(impact["has_external_reference_evidence"])
+        self.assertEqual(
+            "critical",
+            impact["breaking_change_severity_hint"],
+        )
+        self.assertEqual(
+            ["checkout.py", "reporting.py"],
             result["analysis_sources"],
         )
 

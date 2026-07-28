@@ -500,8 +500,14 @@ Kurallar:
 5. Gerekirse compare_symbol, find_symbol_references, read_file_section ve search_project_docs kullan.
 6. README ve Markdown destekleyici baglamdir; kaynak kod teknik gercekliktir.
 7. Yalnizca PR degisikliginin capraz dosya etkisini acikla.
-8. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
-9. Tum aciklama metinleri Turkce olsun.
+8. Hunk basligindan gelen ancak acik bir bildirim degisikligi olmayan ve base/head
+   davranisi ayni kalan sembolleri impact_analysis listesine ekleme.
+9. Fonksiyon veya method imzasi icin degisen dosya disinda referans kaniti varsa
+   critical breaking_change uygundur. Dis repository referansi yoksa bunu en fazla
+   high API uyumluluk riski olarak degerlendir; yalnizca olasi harici tuketici
+   varsayimiyla critical deme.
+10. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
+11. Tum aciklama metinleri Turkce olsun.
 
 Beklenen JSON semasi:
 {{
@@ -700,7 +706,10 @@ def _merge_required_reference_evidence(
         )
         if (
             matching_impact is None
-            and external_files
+            and (
+                external_files
+                or evidence_item.get("symbol_type") in {"function", "method"}
+            )
             and normalized.get("status") == "completed"
         ):
             matching_impact = {
@@ -732,6 +741,14 @@ def _merge_required_reference_evidence(
         matching_impact["evidence"] = sorted(
             set(matching_impact.get("evidence", [])) | set(evidence_lines)
         )
+        matching_impact["external_reference_files"] = external_files
+        matching_impact["has_external_reference_evidence"] = bool(
+            external_files
+        )
+        if evidence_item.get("symbol_type") in {"function", "method"}:
+            matching_impact["breaking_change_severity_hint"] = (
+                "critical" if external_files else "high"
+            )
 
     normalized["impact_analysis"] = impacts
     return normalized
