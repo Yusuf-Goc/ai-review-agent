@@ -42,7 +42,7 @@ class PrReviewReliabilityTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("İnceleme tamamlanamadı", report)
+        self.assertIn("PR incelemesi tamamlanamadı", report)
         self.assertIn("Güvenilir bir ‘hata bulunamadı’ sonucu üretilemedi", report)
         self.assertNotIn("\nKritik hata bulunamadı.", report)
 

@@ -23,13 +23,105 @@ def _shorten_text(text: str, max_length: int = MAX_COMMENT_LENGTH) -> str:
     )
 
 
-def _context_type_label(source_type: str) -> str:
-    labels = {
-        "codebase_summary": "Codebase Summary JSON",
-        "markdown": "README / Markdown dokümanları",
-        "none": "Yalnızca PR diff'i",
-    }
-    return labels.get(source_type, source_type or "Bilinmeyen")
+def _reviewed_file_count(review_result: dict) -> int:
+    paths = set()
+    field_pairs = (
+        ("changes", "file"),
+        ("findings", "file"),
+        ("changed_symbols", "file"),
+        ("impact_analysis", "changed_file"),
+    )
+
+    for field_name, path_key in field_pairs:
+        for item in review_result.get(field_name, []):
+            if isinstance(item, dict) and item.get(path_key):
+                paths.add(item[path_key])
+
+    return len(paths)
+
+
+def _build_pr_summary(review_result: dict, finding_count: int) -> str:
+    review_status = review_result.get("review_status", "completed")
+    file_count = _reviewed_file_count(review_result)
+    scope = (
+        f"PR kapsamında {file_count} dosyadaki değişiklikler"
+        if file_count
+        else "PR değişiklikleri"
+    )
+
+    if review_status == "completed":
+        result = (
+            f"Toplam {finding_count} önemli bulgu tespit edildi; değişen "
+            "fonksiyon ve değişkenlerin diğer dosyalardaki kullanımlara "
+            "etkisi aşağıda özetlenmiştir."
+            if finding_count
+            else "Kritik, yüksek veya orta seviyede bulgu tespit edilmedi."
+        )
+        return f"{scope} incelendi. {result}"
+
+    if review_status == "partial":
+        return (
+            f"{scope} kısmen incelendi. Elde edilen {finding_count} bulgu "
+            "aşağıda listelenmiştir; tamamlanamayan analiz nedeniyle bu "
+            "rapor temiz bir PR onayı olarak değerlendirilmemelidir."
+        )
+
+    return (
+        "PR incelemesi tamamlanamadı. Güvenilir bir temiz sonuç "
+        "üretilemedi; workflow logları kontrol edilmelidir."
+    )
+
+
+def _matching_impact(finding: dict, impact_analysis: list[dict]):
+    finding_file = finding.get("file")
+    finding_symbol = finding.get("symbol")
+    message = finding.get("message", "")
+    same_file = [
+        item
+        for item in impact_analysis
+        if item.get("changed_file") == finding_file
+    ]
+
+    for impact in same_file:
+        symbol = impact.get("symbol")
+        if symbol and (
+            symbol == finding_symbol
+            or (isinstance(message, str) and symbol in message)
+        ):
+            return impact
+
+    return same_file[0] if len(same_file) == 1 else None
+
+
+def _matching_change(finding: dict, impact, changes: list[dict]):
+    file_name = impact.get("changed_file") if impact else finding.get("file")
+    symbol = impact.get("symbol") if impact else finding.get("symbol")
+
+    for change in changes:
+        if change.get("file") == file_name and change.get("symbol") == symbol:
+            return change
+
+    return None
+
+
+def _usage_files(impact) -> list[str]:
+    if not impact:
+        return []
+
+    files = set()
+    for field_name in (
+        "external_reference_files",
+        "reference_files_base",
+        "reference_files_head",
+    ):
+        files.update(
+            item
+            for item in impact.get(field_name, [])
+            if isinstance(item, str) and item
+        )
+
+    files.discard(impact.get("changed_file"))
+    return sorted(files)
 
 
 def format_github_markdown_report(review_result: dict) -> str:
@@ -48,208 +140,74 @@ def format_github_markdown_report(review_result: dict) -> str:
         for item in review_result.get("impact_analysis", [])
         if isinstance(item, dict)
     ]
-    summary = review_result.get("summary", "İnceleme tamamlandı.")
     review_status = review_result.get("review_status", "completed")
-    failed_batches = review_result.get("failed_batches", [])
-    errors = [
-        error
-        for error in review_result.get("errors", [])
-        if isinstance(error, str) and error
-    ]
-    context_source_type = review_result.get("context_source_type", "none")
-    context_sources = [
-        source
-        for source in review_result.get("context_sources", [])
-        if isinstance(source, str) and source
-    ]
-    analysis_sources = [
-        source
-        for source in review_result.get("analysis_sources", [])
-        if isinstance(source, str) and source
-    ]
-
-    severity_counts = {
-        "critical": 0,
-        "high": 0,
-        "medium": 0,
-    }
-
-    for finding in findings:
-        severity = finding.get("severity", "medium")
-        if severity in severity_counts:
-            severity_counts[severity] += 1
 
     lines = [
         "## Vestel AI Code Review",
         "",
-        f"**Özet:** {summary}",
+        "### Özet",
         "",
-        "### Bulgu Sayısı",
+        _build_pr_summary(review_result, len(findings)),
         "",
-        f"- Critical: {severity_counts['critical']}",
-        f"- High: {severity_counts['high']}",
-        f"- Medium: {severity_counts['medium']}",
+        "### Bulgular",
         "",
     ]
 
-    if review_status != "completed":
-        status_text = (
-            "İnceleme kısmen tamamlandı."
-            if review_status == "partial"
-            else "İnceleme tamamlanamadı."
-        )
-        lines.extend(
-            [
-                "### İnceleme Durumu",
-                "",
-                f"⚠️ **{status_text}** Bu sonuç temiz bir PR onayı olarak değerlendirilmemelidir.",
-            ]
-        )
-
-        displayed_errors = set()
-        for item in failed_batches:
-            reason = item.get('reason', 'Bilinmeyen hata')
-            displayed_errors.add(reason)
-            lines.append(
-                f"- Batch {item.get('batch', '?')}: {reason}"
-            )
-
-        for error in errors:
-            if error not in displayed_errors:
-                lines.append(f"- {error}")
-
-        lines.append("")
-
-    if changes:
-        lines.extend(["### PR'da Ne Değişti?", ""])
-
-        for index, change in enumerate(changes, start=1):
-            file_name = change.get("file", "bilinmeyen dosya")
-            symbol = change.get("symbol") or "dosya geneli"
-            symbol_type = change.get("symbol_type", "unknown")
-            change_type = change.get("change_type", "modified")
-            before = change.get("before", "")
-            after = change.get("after", "")
-            behavior_change = change.get("behavior_change", "")
-
-            lines.extend(
-                [
-                    f"#### {index}. `{file_name}` — `{symbol}`",
-                    "",
-                    f"- **Tür:** `{symbol_type}` / `{change_type}`",
-                ]
-            )
-            if before:
-                lines.append(f"- **Önce:** {before}")
-            if after:
-                lines.append(f"- **Sonra:** {after}")
-            if behavior_change:
-                lines.append(f"- **Davranış etkisi:** {behavior_change}")
-            lines.append("")
-
-    if impact_analysis:
-        lines.extend(["### Çapraz Dosya Etkisi", ""])
-
-        for index, impact_item in enumerate(impact_analysis, start=1):
-            symbol = impact_item.get("symbol", "bilinmeyen sembol")
-            changed_file = impact_item.get("changed_file", "bilinmeyen dosya")
-            impact_text = impact_item.get("impact", "Etki açıklaması yok.")
-            definition_files = impact_item.get("definition_files", [])
-            base_refs = impact_item.get("reference_files_base", [])
-            head_refs = impact_item.get("reference_files_head", [])
-            evidence = impact_item.get("evidence", [])
-
-            lines.extend(
-                [
-                    f"#### {index}. `{symbol}` — `{changed_file}`",
-                    "",
-                    f"- **Etki:** {impact_text}",
-                ]
-            )
-            if definition_files:
-                lines.append(
-                    "- **Tanım dosyaları:** "
-                    + ", ".join(f"`{item}`" for item in definition_files)
-                )
-            if base_refs:
-                lines.append(
-                    "- **Base kullanımları:** "
-                    + ", ".join(f"`{item}`" for item in base_refs)
-                )
-            if head_refs:
-                lines.append(
-                    "- **Head kullanımları:** "
-                    + ", ".join(f"`{item}`" for item in head_refs)
-                )
-            if evidence:
-                lines.append(
-                    "- **Kanıt:** "
-                    + ", ".join(f"`{item}`" for item in evidence)
-                )
-            lines.append("")
-
-    lines.extend(
-        [
-            "### Kullanılan Bağlam",
-            "",
-            f"- **Bağlam türü:** {_context_type_label(context_source_type)}",
-        ]
-    )
-    if context_sources:
-        lines.append(
-            "- **Kaynaklar:** "
-            + ", ".join(f"`{source}`" for source in context_sources)
-        )
-    if analysis_sources:
-        lines.append(
-            "- **Repository analiz kaynakları:** "
-            + ", ".join(f"`{source}`" for source in analysis_sources)
-        )
-    elif context_source_type == "none":
-        lines.append("- Ek proje özeti bulunamadığı için inceleme PR diff'i üzerinden yapıldı.")
-    lines.append("")
-
     if not findings:
-        lines.extend(
-            [
-                "### Sonuç",
-                "",
-                (
-                    "Kritik hata bulunamadı."
-                    if review_status == "completed"
-                    else "Güvenilir bir ‘hata bulunamadı’ sonucu üretilemedi."
-                ),
-            ]
+        lines.append(
+            "Kritik, yüksek veya orta seviyede bulgu tespit edilmedi."
+            if review_status == "completed"
+            else "Güvenilir bir ‘hata bulunamadı’ sonucu üretilemedi."
         )
         return _shorten_text("\n".join(lines))
-
-    lines.extend(["### Bulgular", ""])
 
     for index, finding in enumerate(findings, start=1):
         file_name = finding.get("file", "bilinmeyen dosya")
         line = finding.get("line", "bilinmeyen satır")
-        severity = finding.get("severity", "unknown")
-        category = finding.get("category", "unknown")
-        message = finding.get("message", "")
-        suggestion = finding.get("suggestion", "")
+        impact = _matching_impact(finding, impact_analysis)
+        change = _matching_change(finding, impact, changes)
+        symbol = impact.get("symbol") if impact else finding.get("symbol")
+        title = (
+            f"#### {index}. `{symbol}` — `{file_name}:{line}`"
+            if symbol
+            else f"#### {index}. `{file_name}:{line}`"
+        )
 
         lines.extend(
             [
-                f"#### {index}. `{file_name}:{line}`",
+                title,
                 "",
-                f"- **Seviye:** `{severity}`",
-                f"- **Kategori:** `{category}`",
-                f"- **Problem:** {message}",
+                f"- **Seviye:** `{finding.get('severity', 'unknown')}`",
+                f"- **Kategori:** `{finding.get('category', 'unknown')}`",
             ]
         )
 
-        if suggestion:
-            lines.append(f"- **Öneri:** {suggestion}")
+        if change:
+            detail = []
+            if change.get("before"):
+                detail.append(f"Önce: {change['before']}")
+            if change.get("after"):
+                detail.append(f"Sonra: {change['after']}")
+            if change.get("behavior_change"):
+                detail.append(f"Etki: {change['behavior_change']}")
+            if detail:
+                lines.append(f"- **Değişiklik:** {' '.join(detail)}")
+        elif impact and impact.get("impact"):
+            lines.append(f"- **Değişiklik ve etki:** {impact['impact']}")
 
+        usage_files = _usage_files(impact)
+        if usage_files:
+            lines.append(
+                "- **Diğer kullanımlar:** "
+                + ", ".join(f"`{item}`" for item in usage_files)
+            )
+
+        lines.append(f"- **Problem:** {finding.get('message', '')}")
+        if finding.get("suggestion"):
+            lines.append(f"- **Öneri:** {finding['suggestion']}")
         lines.append("")
 
     return _shorten_text("\n".join(lines))
-
 
 def post_pr_comment(repo: str, pr_number: str, body: str, token: str) -> None:
     if not repo:

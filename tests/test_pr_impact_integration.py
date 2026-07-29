@@ -215,13 +215,41 @@ class PrImpactIntegrationTests(unittest.TestCase):
         self.assertEqual("partial", result["review_status"])
         self.assertIn("Tool analizi tamamlanamadi.", result["errors"])
 
-    def test_github_report_renders_cross_file_impact(self):
+    def test_github_finding_includes_change_and_usage_context(self):
         report = format_github_markdown_report(
             {
                 "review_status": "completed",
                 "summary": "Etki incelendi.",
-                "changes": [],
-                "findings": [],
+                "changes": [
+                    {
+                        "file": "service.py",
+                        "symbol": "calculate_total",
+                        "symbol_type": "function",
+                        "change_type": "modified",
+                        "before": "Tek parametre aliyordu.",
+                        "after": "Yeni discount parametresi aliyor.",
+                        "behavior_change": "Eski cagrilar uyumsuz hale gelir.",
+                    }
+                ],
+                "findings": [
+                    {
+                        "file": "service.py",
+                        "line": 2,
+                        "severity": "critical",
+                        "category": "breaking_change",
+                        "message": (
+                            "calculate_total imzasi consumer.py "
+                            "cagrisini kiriyor."
+                        ),
+                        "suggestion": "Eski imzayi koruyun.",
+                    }
+                ],
+                "changed_symbols": [
+                    {
+                        "file": "service.py",
+                        "symbol": "calculate_total",
+                    }
+                ],
                 "impact_analysis": [
                     {
                         "symbol": "calculate_total",
@@ -230,7 +258,7 @@ class PrImpactIntegrationTests(unittest.TestCase):
                         "definition_files": ["service.py"],
                         "reference_files_base": ["consumer.py"],
                         "reference_files_head": ["consumer.py"],
-                        "evidence": ["consumer.py:9"],
+                        "evidence": ["service.py:2", "consumer.py:9"],
                     }
                 ],
                 "context_source_type": "markdown",
@@ -239,10 +267,14 @@ class PrImpactIntegrationTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("Çapraz Dosya Etkisi", report)
-        self.assertIn("calculate_total", report)
-        self.assertIn("consumer.py yeni davranistan etkilenir", report)
-        self.assertIn("Repository analiz kaynakları", report)
+        self.assertIn("### Özet", report)
+        self.assertIn("### Bulgular", report)
+        self.assertIn("`calculate_total` — `service.py:2`", report)
+        self.assertIn("Önce: Tek parametre aliyordu.", report)
+        self.assertIn("Sonra: Yeni discount parametresi aliyor.", report)
+        self.assertIn("Diğer kullanımlar:** `consumer.py`", report)
+        self.assertNotIn("Çapraz Dosya Etkisi", report)
+        self.assertNotIn("Repository analiz kaynakları", report)
 
 
 if __name__ == "__main__":

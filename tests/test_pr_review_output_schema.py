@@ -116,11 +116,11 @@ class PrReviewOutputSchemaTests(unittest.TestCase):
         self.assertEqual("completed", result["review_status"])
         self.assertEqual(2, len(result["changes"]))
 
-    def test_github_report_renders_changes_and_context(self):
+    def test_github_report_only_renders_summary_and_findings(self):
         report = format_github_markdown_report(
             {
                 "review_status": "completed",
-                "summary": "Davranis degisikligi incelendi.",
+                "summary": "Bu uzun model ozeti raporda kullanilmamali.",
                 "changes": [
                     {
                         "file": "service.py",
@@ -133,17 +133,29 @@ class PrReviewOutputSchemaTests(unittest.TestCase):
                     }
                 ],
                 "findings": [],
+                "changed_symbols": [
+                    {
+                        "file": "service.py",
+                        "symbol": "calculate_total",
+                    }
+                ],
                 "context_source_type": "markdown",
                 "context_sources": ["README.md", "docs/architecture.md"],
             }
         )
 
-        self.assertIn("PR'da Ne Değişti?", report)
-        self.assertIn("calculate_total", report)
-        self.assertIn("Toplam fiyat azalabilir", report)
-        self.assertIn("Kullanılan Bağlam", report)
-        self.assertIn("README.md", report)
-        self.assertIn("Kritik hata bulunamadı", report)
+        self.assertIn("### Özet", report)
+        self.assertIn("### Bulgular", report)
+        self.assertIn("1 dosyadaki değişiklikler incelendi", report)
+        self.assertIn(
+            "Kritik, yüksek veya orta seviyede bulgu tespit edilmedi",
+            report,
+        )
+        self.assertNotIn("Bulgu Sayısı", report)
+        self.assertNotIn("PR'da Ne Değişti?", report)
+        self.assertNotIn("Çapraz Dosya Etkisi", report)
+        self.assertNotIn("Kullanılan Bağlam", report)
+        self.assertNotIn("README.md", report)
 
     def test_console_failed_report_does_not_claim_clean_result(self):
         report = format_review_report(
