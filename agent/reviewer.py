@@ -184,25 +184,37 @@ def apply_breaking_change_severity_policy(
 
 
 
-def _relevance_external_files(impact):
+def _relevance_reference_files(impact, field):
     changed_file = impact.get("changed_file")
-    files = set()
+    values = impact.get(field, [])
 
-    for field in ("reference_files_base", "reference_files_head"):
-        values = impact.get(field, [])
-        if not isinstance(values, list):
-            continue
+    if not isinstance(values, list):
+        return set()
 
-        files.update(
-            value
-            for value in values
-            if isinstance(value, str) and value
-        )
+    files = {
+        value
+        for value in values
+        if isinstance(value, str) and value
+    }
 
     if isinstance(changed_file, str):
         files.discard(changed_file)
 
-    return sorted(files)
+    return files
+
+
+def _added_files_from_changes(changes):
+    return {
+        item.get("file")
+        for item in changes
+        if (
+            isinstance(item, dict)
+            and item.get("change_type") == "added"
+            and item.get("symbol_type") == "file"
+            and isinstance(item.get("file"), str)
+            and item.get("file")
+        )
+    }
 
 
 def apply_repository_relevance_evidence(
@@ -220,6 +232,13 @@ def apply_repository_relevance_evidence(
         "query",
     }
 
+    change_items = [
+        item
+        for item in changes
+        if isinstance(item, dict)
+    ]
+    added_files = _added_files_from_changes(change_items)
+
     impacts = [
         item
         for item in impact_analysis
@@ -228,10 +247,7 @@ def apply_repository_relevance_evidence(
 
     normalized = []
 
-    for change in changes:
-        if not isinstance(change, dict):
-            continue
-
+    for change in change_items:
         updated = dict(change)
 
         if (
@@ -259,24 +275,58 @@ def apply_repository_relevance_evidence(
 
             matching_impacts.append(impact)
 
-        external_files = sorted(
-            {
-                path
-                for impact in matching_impacts
-                for path in _relevance_external_files(impact)
-            }
+        base_reference_files = {
+            reference_file
+            for impact in matching_impacts
+            for reference_file in _relevance_reference_files(
+                impact,
+                "reference_files_base",
+            )
+        }
+        head_reference_files = {
+            reference_file
+            for impact in matching_impacts
+            for reference_file in _relevance_reference_files(
+                impact,
+                "reference_files_head",
+            )
+        }
+
+        external_files = (
+            base_reference_files
+            | head_reference_files
         )
 
-        if external_files:
+        repository_files = sorted(
+            external_files - added_files
+        )
+        same_pr_added_files = sorted(
+            external_files & added_files
+        )
+
+        if repository_files:
             rendered_files = ", ".join(
-                f"`{path}`"
-                for path in external_files
+                f"`{reference_file}`"
+                for reference_file in repository_files
             )
             updated["repository_relevance"] = "related"
             updated["relevance_reason"] = (
-                "Repository aramasinda degisen dosya disinda "
+                "PR oncesinde repository'de bulunan dosyalarda "
                 f"kullanim kaniti bulundu: {rendered_files}."
             )
+
+        elif same_pr_added_files:
+            rendered_files = ", ".join(
+                f"`{reference_file}`"
+                for reference_file in same_pr_added_files
+            )
+            updated["repository_relevance"] = "unclear"
+            updated["relevance_reason"] = (
+                "Yalnizca ayni PR'da eklenen dosyalarda kullanim "
+                f"kaniti bulundu: {rendered_files}. Mevcut repository "
+                "dosyalarina baglanti kanitlanmadi."
+            )
+
         else:
             updated["repository_relevance"] = "unclear"
 
@@ -303,6 +353,7 @@ def apply_repository_relevance_evidence(
         normalized.append(updated)
 
     return normalized
+
 
 def analyze_payload(
     review_payload,

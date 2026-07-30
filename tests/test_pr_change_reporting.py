@@ -216,5 +216,92 @@ class PrChangeReportingTests(unittest.TestCase):
         )
 
 
+    def test_same_pr_added_usage_stays_unclear(self):
+        changes = [
+            {
+                "file": "function_test/use_value_utils.py",
+                "symbol": "dosya geneli",
+                "symbol_type": "file",
+                "change_type": "added",
+            },
+            {
+                "file": "function_test/use_value_utils.py",
+                "symbol": "normalize_score",
+                "symbol_type": "function",
+                "change_type": "added",
+            },
+            {
+                "file": "function_test/value_utils.py",
+                "symbol": "dosya geneli",
+                "symbol_type": "file",
+                "change_type": "added",
+            },
+            {
+                "file": "function_test/value_utils.py",
+                "symbol": "clamp",
+                "symbol_type": "function",
+                "change_type": "added",
+            },
+        ]
+
+        impact_analysis = [
+            {
+                "symbol": "clamp",
+                "symbol_type": "function",
+                "changed_file": "function_test/value_utils.py",
+                "reference_files_base": [],
+                "reference_files_head": [
+                    "function_test/use_value_utils.py",
+                ],
+            }
+        ]
+
+        result = apply_repository_relevance_evidence(
+            changes,
+            impact_analysis,
+            "completed",
+        )
+
+        by_symbol = {
+            (item["file"], item["symbol"]): item
+            for item in result
+        }
+
+        file_change = by_symbol[
+            (
+                "function_test/value_utils.py",
+                "dosya geneli",
+            )
+        ]
+        function_change = by_symbol[
+            (
+                "function_test/value_utils.py",
+                "clamp",
+            )
+        ]
+
+        self.assertEqual(
+            "unclear",
+            file_change["repository_relevance"],
+        )
+        self.assertEqual(
+            "unclear",
+            function_change["repository_relevance"],
+        )
+
+        self.assertIn(
+            "ayni PR'da eklenen",
+            file_change["relevance_reason"],
+        )
+        self.assertIn(
+            "function_test/use_value_utils.py",
+            file_change["relevance_reason"],
+        )
+        self.assertIn(
+            "Mevcut repository dosyalarina baglanti kanitlanmadi",
+            function_change["relevance_reason"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
