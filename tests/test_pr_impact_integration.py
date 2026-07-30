@@ -167,7 +167,7 @@ class PrImpactIntegrationTests(unittest.TestCase):
         self.assertEqual("high", normalized[0]["severity"])
         self.assertEqual("critical", normalized[1]["severity"])
 
-    def test_impact_failure_marks_otherwise_completed_review_partial(self):
+    def test_impact_failure_preserves_completed_review_status(self):
         payload, file_payload = self._payload()
 
         with (
@@ -212,7 +212,15 @@ class PrImpactIntegrationTests(unittest.TestCase):
                 head_sha="head",
             )
 
-        self.assertEqual("partial", result["review_status"])
+        self.assertEqual("completed", result["review_status"])
+        self.assertEqual(
+            "failed",
+            result["impact_analysis_status"],
+        )
+        self.assertIn(
+            "ana PR incelemesi sonucu korundu",
+            result["summary"],
+        )
         self.assertIn("Tool analizi tamamlanamadi.", result["errors"])
 
     def test_github_finding_includes_change_and_usage_context(self):

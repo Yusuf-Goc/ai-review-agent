@@ -478,8 +478,11 @@ def analyze_diff_in_batches(
         review_status = "failed"
 
     impact_errors = impact_result.get("errors", [])
-    if impact_result.get("status") == "failed" and review_status == "completed":
-        review_status = "partial"
+    if impact_result.get("status") == "failed":
+        summaries.append(
+            "Repository capraz dosya analizi tamamlanamadi; "
+            "ana PR incelemesi sonucu korundu."
+        )
 
     return {
         "review_status": review_status,
