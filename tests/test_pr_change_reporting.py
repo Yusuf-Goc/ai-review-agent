@@ -3,6 +3,7 @@ import unittest
 
 from agent.github_reporter import format_github_markdown_report
 from agent.llm_client import build_review_prompt, normalize_json_response
+from agent.reviewer import apply_repository_relevance_evidence
 
 
 class PrChangeReportingTests(unittest.TestCase):
@@ -123,6 +124,96 @@ class PrChangeReportingTests(unittest.TestCase):
         self.assertNotIn("- **Değişiklik:**", report)
         self.assertIn("Diğer kullanımlar:** `consumer.py`", report)
         self.assertIn("Problem:** Hesaplama yanlış sonuç üretiyor.", report)
+
+
+    def test_path_and_function_role_are_not_relevance_evidence(self):
+        changes = [
+            {
+                "file": "function_test/value_utils.py",
+                "symbol": "dosya geneli",
+                "symbol_type": "file",
+                "change_type": "added",
+                "repository_relevance": "related",
+                "relevance_reason": (
+                    "Yardimci araclar dizininde oldugu icin ilgilidir."
+                ),
+            },
+            {
+                "file": "function_test/value_utils.py",
+                "symbol": "clamp",
+                "symbol_type": "function",
+                "change_type": "added",
+                "repository_relevance": "related",
+                "relevance_reason": (
+                    "Dosyanin ana fonksiyonu oldugu icin ilgilidir."
+                ),
+            },
+        ]
+
+        result = apply_repository_relevance_evidence(
+            changes,
+            [],
+            "completed",
+        )
+
+        self.assertEqual("unclear", result[0]["repository_relevance"])
+        self.assertEqual("unclear", result[1]["repository_relevance"])
+        self.assertIn(
+            "tek basina iliski kaniti sayilmadi",
+            result[0]["relevance_reason"],
+        )
+        self.assertIn(
+            "tek basina iliski kaniti sayilmadi",
+            result[1]["relevance_reason"],
+        )
+
+    def test_external_repository_usage_marks_added_items_related(self):
+        changes = [
+            {
+                "file": "function_test/value_utils.py",
+                "symbol": "dosya geneli",
+                "symbol_type": "file",
+                "change_type": "added",
+            },
+            {
+                "file": "function_test/value_utils.py",
+                "symbol": "clamp",
+                "symbol_type": "function",
+                "change_type": "added",
+            },
+        ]
+
+        impact_analysis = [
+            {
+                "symbol": "clamp",
+                "symbol_type": "function",
+                "changed_file": "function_test/value_utils.py",
+                "reference_files_base": [],
+                "reference_files_head": [
+                    "service/pricing.py",
+                ],
+                "evidence": [
+                    "service/pricing.py:12",
+                ],
+            }
+        ]
+
+        result = apply_repository_relevance_evidence(
+            changes,
+            impact_analysis,
+            "completed",
+        )
+
+        self.assertEqual("related", result[0]["repository_relevance"])
+        self.assertEqual("related", result[1]["repository_relevance"])
+        self.assertIn(
+            "service/pricing.py",
+            result[0]["relevance_reason"],
+        )
+        self.assertIn(
+            "service/pricing.py",
+            result[1]["relevance_reason"],
+        )
 
 
 if __name__ == "__main__":

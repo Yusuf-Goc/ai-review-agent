@@ -183,6 +183,127 @@ def apply_breaking_change_severity_policy(
     return normalized
 
 
+
+def _relevance_external_files(impact):
+    changed_file = impact.get("changed_file")
+    files = set()
+
+    for field in ("reference_files_base", "reference_files_head"):
+        values = impact.get(field, [])
+        if not isinstance(values, list):
+            continue
+
+        files.update(
+            value
+            for value in values
+            if isinstance(value, str) and value
+        )
+
+    if isinstance(changed_file, str):
+        files.discard(changed_file)
+
+    return sorted(files)
+
+
+def apply_repository_relevance_evidence(
+    changes,
+    impact_analysis,
+    impact_status,
+):
+    relevance_symbol_types = {
+        "file",
+        "function",
+        "method",
+        "class",
+        "struct",
+        "table",
+        "query",
+    }
+
+    impacts = [
+        item
+        for item in impact_analysis
+        if isinstance(item, dict)
+    ]
+
+    normalized = []
+
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+
+        updated = dict(change)
+
+        if (
+            updated.get("change_type") != "added"
+            or updated.get("symbol_type") not in relevance_symbol_types
+        ):
+            normalized.append(updated)
+            continue
+
+        changed_file = updated.get("file")
+        symbol = updated.get("symbol")
+        symbol_type = updated.get("symbol_type")
+
+        matching_impacts = []
+
+        for impact in impacts:
+            if impact.get("changed_file") != changed_file:
+                continue
+
+            if (
+                symbol_type != "file"
+                and impact.get("symbol") != symbol
+            ):
+                continue
+
+            matching_impacts.append(impact)
+
+        external_files = sorted(
+            {
+                path
+                for impact in matching_impacts
+                for path in _relevance_external_files(impact)
+            }
+        )
+
+        if external_files:
+            rendered_files = ", ".join(
+                f"`{path}`"
+                for path in external_files
+            )
+            updated["repository_relevance"] = "related"
+            updated["relevance_reason"] = (
+                "Repository aramasinda degisen dosya disinda "
+                f"kullanim kaniti bulundu: {rendered_files}."
+            )
+        else:
+            updated["repository_relevance"] = "unclear"
+
+            if impact_status == "failed":
+                updated["relevance_reason"] = (
+                    "Repository etki analizi tamamlanamadigi icin "
+                    "bu yeni dosya veya sembolun repository iliskisi "
+                    "kanitlanamadi."
+                )
+            elif impact_status == "skipped":
+                updated["relevance_reason"] = (
+                    "Repository etki analizi calismadigi icin "
+                    "bu yeni dosya veya sembolun repository iliskisi "
+                    "kanitlanamadi."
+                )
+            else:
+                updated["relevance_reason"] = (
+                    "Repository aramasinda degisen dosya disinda "
+                    "import, cagri veya kullanim kaniti bulunamadi; "
+                    "dosya yolu ve isimlendirme tek basina iliski "
+                    "kaniti sayilmadi."
+                )
+
+        normalized.append(updated)
+
+    return normalized
+
 def analyze_payload(
     review_payload,
     client=None,
@@ -492,7 +613,11 @@ def analyze_diff_in_batches(
             f"{len(failed_batches)} batch tamamlanamadi. "
             + " ".join(summaries)
         ),
-        "changes": merge_changes(all_changes),
+        "changes": apply_repository_relevance_evidence(
+            merge_changes(all_changes),
+            impact_result.get("impact_analysis", []),
+            impact_result.get("status", "skipped"),
+        ),
         "findings": apply_breaking_change_severity_policy(
             all_findings,
             impact_result.get("impact_analysis", []),

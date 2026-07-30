@@ -68,12 +68,14 @@ Inceleme kurallari:
     `added` olmalıdır.
 17. Yeni eklenen her önemli function, method, class, struct, table veya query için dosya
     kaydından ayrı bir `changes` kaydı üret. Hata bulunmaması bu kaydı atlama nedeni değildir.
-18. Yeni eklenen dosya ve sembollerin repository ile ilişkisini değerlendir. Bunun için
-    dosya yolu, importlar, çağrılar, isimlendirme, `project_context`,
-    `main_branch_file_context`, `repository_impact_context` ve araç kanıtlarını kullan.
-19. `repository_relevance` alanı yalnızca `related`, `unclear` veya `unrelated` olabilir.
-    Kanıt yetersizse `unclear` yaz; kullanılmayan yeni bir fonksiyonu sırf çağrısı yok diye
-    otomatik olarak `unrelated` sayma. `relevance_reason` alanında kısa ve somut gerekçe ver.
+18. Yeni eklenen dosya ve sembollerde `related` sonucunu yalnızca
+    `repository_impact_context` içindeki eşleşen sembol veya dosyaya ait, değişen dosya
+    dışındaki import, çağrı veya kullanım kanıtı destekliyorsa ver.
+19. Dosya yolu, klasör adı, isimlendirme, docstring, fonksiyonun dosyanın ana işlevi
+    olması veya genel olarak faydalı görünmesi tek başına repository ilişkisi kanıtı değildir.
+    Dış kullanım kanıtı yoksa `unclear` yaz. Kullanılmayan yeni bir fonksiyonu sırf çağrısı
+    yok diye otomatik olarak `unrelated` sayma. `unrelated` sonucunu yalnızca kaynak kod
+    veya proje belgelerinde açık bir uyumsuzluk kanıtı varsa kullan.
 20. `findings` içindeki `message` ve `suggestion` alanlarında değişiklik özetini, önce/sonra
     bilgisini veya davranış açıklamasını tekrarlama; yalnızca problem ve düzeltmeyi yaz.
 16. JSON içinde `changed_symbols` varsa diff'ten deterministik olarak çıkarılmış değişen
