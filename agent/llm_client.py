@@ -63,6 +63,19 @@ Inceleme kurallari:
     önceki davranış, yeni davranış ve davranış etkisini kısa Türkçe metinlerle belirt.
 15. `findings` yalnızca gerçek hata ve riskler içindir. Normal ve doğru değişiklikleri
     bulgu olarak yazma; bunları `changes` alanında açıkla.
+16. Diff yeni bir dosya ekliyorsa `changes` içinde bu dosya için ayrıca bir kayıt üret:
+    `symbol` değeri `dosya geneli`, `symbol_type` değeri `file` ve `change_type` değeri
+    `added` olmalıdır.
+17. Yeni eklenen her önemli function, method, class, struct, table veya query için dosya
+    kaydından ayrı bir `changes` kaydı üret. Hata bulunmaması bu kaydı atlama nedeni değildir.
+18. Yeni eklenen dosya ve sembollerin repository ile ilişkisini değerlendir. Bunun için
+    dosya yolu, importlar, çağrılar, isimlendirme, `project_context`,
+    `main_branch_file_context`, `repository_impact_context` ve araç kanıtlarını kullan.
+19. `repository_relevance` alanı yalnızca `related`, `unclear` veya `unrelated` olabilir.
+    Kanıt yetersizse `unclear` yaz; kullanılmayan yeni bir fonksiyonu sırf çağrısı yok diye
+    otomatik olarak `unrelated` sayma. `relevance_reason` alanında kısa ve somut gerekçe ver.
+20. `findings` içindeki `message` ve `suggestion` alanlarında değişiklik özetini, önce/sonra
+    bilgisini veya davranış açıklamasını tekrarlama; yalnızca problem ve düzeltmeyi yaz.
 16. JSON içinde `changed_symbols` varsa diff'ten deterministik olarak çıkarılmış değişen
     fonksiyon, method, class, struct, değişken veya SQL nesneleridir.
 17. JSON içinde `repository_impact_context` varsa repository tool'lariyla base ve head
@@ -84,7 +97,9 @@ Beklenen JSON semasi:
       "change_type": "added|modified|deleted|renamed|behavior_changed",
       "before": "Degisiklikten onceki durum veya bos metin",
       "after": "Degisiklikten sonraki durum",
-      "behavior_change": "Davranisa etkisi veya bos metin"
+      "behavior_change": "Davranisa etkisi veya bos metin",
+      "repository_relevance": "related|unclear|unrelated",
+      "relevance_reason": "Repository iliskisi icin kisa ve kanita dayali gerekce"
     }}
   ],
   "findings": [
@@ -195,6 +210,26 @@ def normalize_json_response(ai_output):
         for item in changes
         if isinstance(item, dict)
     ]
+
+    relevance_values = {"related", "unclear", "unrelated"}
+    relevance_symbol_types = {
+        "file",
+        "function",
+        "method",
+        "class",
+        "struct",
+        "table",
+        "query",
+    }
+    for change in parsed["changes"]:
+        if (
+            change.get("change_type") == "added"
+            and change.get("symbol_type") in relevance_symbol_types
+        ):
+            if change.get("repository_relevance") not in relevance_values:
+                change["repository_relevance"] = "unclear"
+            if not isinstance(change.get("relevance_reason"), str):
+                change["relevance_reason"] = ""
 
     findings = parsed.get("findings", [])
     if not isinstance(findings, list):

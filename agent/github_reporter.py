@@ -149,9 +149,62 @@ def format_github_markdown_report(review_result: dict) -> str:
         "",
         _build_pr_summary(review_result, len(findings)),
         "",
-        "### Bulgular",
+        "### Değişiklikler",
         "",
     ]
+
+    relevance_labels = {
+        "related": "İlgili",
+        "unclear": "Belirsiz",
+        "unrelated": "İlgisiz",
+    }
+
+    if changes:
+        for index, change in enumerate(changes, start=1):
+            file_name = change.get("file", "bilinmeyen dosya")
+            symbol = change.get("symbol") or "dosya geneli"
+            symbol_type = change.get("symbol_type", "unknown")
+            change_type = change.get("change_type", "modified")
+
+            lines.extend(
+                [
+                    f"#### {index}. `{file_name}` — `{symbol}`",
+                    "",
+                    f"- **Tür:** `{symbol_type}` / `{change_type}`",
+                ]
+            )
+
+            if change.get("before"):
+                lines.append(f"- **Önce:** {change['before']}")
+            if change.get("after"):
+                lines.append(f"- **Sonra:** {change['after']}")
+            if change.get("behavior_change"):
+                lines.append(
+                    f"- **Davranış etkisi:** {change['behavior_change']}"
+                )
+
+            relevance = change.get("repository_relevance")
+            if relevance in relevance_labels:
+                lines.append(
+                    "- **Repository ilişkisi:** "
+                    f"`{relevance_labels[relevance]}`"
+                )
+            if change.get("relevance_reason"):
+                lines.append(
+                    "- **İlişki gerekçesi:** "
+                    f"{change['relevance_reason']}"
+                )
+
+            lines.append("")
+    else:
+        lines.extend(
+            [
+                "Model anlamlı bir değişiklik özeti üretmedi.",
+                "",
+            ]
+        )
+
+    lines.extend(["### Bulgular", ""])
 
     if not findings:
         lines.append(
@@ -165,7 +218,6 @@ def format_github_markdown_report(review_result: dict) -> str:
         file_name = finding.get("file", "bilinmeyen dosya")
         line = finding.get("line", "bilinmeyen satır")
         impact = _matching_impact(finding, impact_analysis)
-        change = _matching_change(finding, impact, changes)
         symbol = impact.get("symbol") if impact else finding.get("symbol")
         title = (
             f"#### {index}. `{symbol}` — `{file_name}:{line}`"
@@ -182,19 +234,6 @@ def format_github_markdown_report(review_result: dict) -> str:
             ]
         )
 
-        if change:
-            detail = []
-            if change.get("before"):
-                detail.append(f"Önce: {change['before']}")
-            if change.get("after"):
-                detail.append(f"Sonra: {change['after']}")
-            if change.get("behavior_change"):
-                detail.append(f"Etki: {change['behavior_change']}")
-            if detail:
-                lines.append(f"- **Değişiklik:** {' '.join(detail)}")
-        elif impact and impact.get("impact"):
-            lines.append(f"- **Değişiklik ve etki:** {impact['impact']}")
-
         usage_files = _usage_files(impact)
         if usage_files:
             lines.append(
@@ -208,6 +247,7 @@ def format_github_markdown_report(review_result: dict) -> str:
         lines.append("")
 
     return _shorten_text("\n".join(lines))
+
 
 def post_pr_comment(repo: str, pr_number: str, body: str, token: str) -> None:
     if not repo:
