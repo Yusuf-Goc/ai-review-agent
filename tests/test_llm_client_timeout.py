@@ -16,7 +16,7 @@ class GeminiClientTimeoutTests(unittest.TestCase):
 
         client_mock.assert_called_once_with(
             api_key="test-api-key",
-            http_options={"timeout": 300_000},
+            http_options={"timeout": 90_000},
         )
         self.assertIs(result, client_mock.return_value)
 

@@ -60,7 +60,7 @@ jobs:
         run: |
           python ../ai-review-agent/cli.py \
             --github-pr \
-            --retries 4 \
+            --retries 2 \
             --retry-delay 3
 
   codebase-docs:

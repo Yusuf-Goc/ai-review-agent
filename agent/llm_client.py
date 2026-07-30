@@ -2,8 +2,12 @@ import json
 import re
 import sys
 import time
+from itertools import count
 
 from agent.config import DEFAULT_MODEL, DEFAULT_RETRIES, DEFAULT_RETRY_DELAY, DependencyError, get_api_key
+
+GEMINI_HTTP_TIMEOUT_MS = 90_000
+_MODEL_CALL_IDS = count(1)
 
 
 def create_gemini_client():
@@ -18,7 +22,7 @@ def create_gemini_client():
 
     return genai.Client(
         api_key=api_key,
-        http_options={"timeout": 300_000},
+        http_options={"timeout": GEMINI_HTTP_TIMEOUT_MS},
     )
 
 
@@ -311,6 +315,68 @@ def is_transient_model_error(exc):
     return any(marker in message for marker in transient_markers)
 
 
+def _compact_model_error_message(exc, limit=500):
+    message = " ".join(str(exc).split())
+
+    if not message:
+        return "<bos hata mesaji>"
+
+    if len(message) > limit:
+        return message[:limit] + "..."
+
+    return message
+
+
+def _model_error_status(exc):
+    for attribute in ("status_code", "code"):
+        value = getattr(exc, attribute, None)
+
+        if value is None or callable(value):
+            continue
+
+        enum_value = getattr(value, "value", None)
+        if enum_value is not None:
+            value = enum_value
+
+        return str(value)
+
+    match = re.search(r"\b(4\d{2}|5\d{2})\b", str(exc))
+    if match:
+        return match.group(1)
+
+    return "unknown"
+
+
+def _log_model_error(
+    *,
+    call_id,
+    attempt,
+    total_attempts,
+    elapsed_seconds,
+    exc,
+    will_retry,
+    retry_in_seconds=None,
+):
+    fields = [
+        "Gemini cagrisi basarisiz:",
+        f"call_id={call_id}",
+        f"attempt={attempt}/{total_attempts}",
+        f"elapsed_seconds={elapsed_seconds:.2f}",
+        f"error_type={type(exc).__name__}",
+        f"status={_model_error_status(exc)}",
+        f"will_retry={str(will_retry).lower()}",
+    ]
+
+    if retry_in_seconds is not None:
+        fields.append(f"retry_in_seconds={retry_in_seconds:.1f}")
+
+    fields.append(
+        f"message={_compact_model_error_message(exc)}"
+    )
+
+    print(" ".join(fields), file=sys.stderr)
+
+
 def call_model_with_retries(
     client,
     prompt=None,
@@ -327,15 +393,23 @@ def call_model_with_retries(
 
     request_contents = contents if contents is not None else prompt
     if request_contents is None:
-        raise ValueError("Model cagrisi icin prompt veya contents gereklidir.")
+        raise ValueError(
+            "Model cagrisi icin prompt veya contents gereklidir."
+        )
 
     request_config = config or {
         "temperature": 0,
         "response_mime_type": "application/json",
     }
+
+    call_id = next(_MODEL_CALL_IDS)
+    total_attempts = retries + 1
     last_error = None
 
-    for attempt in range(retries + 1):
+    for attempt_index in range(total_attempts):
+        attempt_number = attempt_index + 1
+        attempt_started = time.monotonic()
+
         try:
             return client.models.generate_content(
                 model=model,
@@ -343,7 +417,19 @@ def call_model_with_retries(
                 config=request_config,
             )
         except Exception as exc:
+            elapsed_seconds = time.monotonic() - attempt_started
+            last_error = exc
+
             if is_daily_quota_error(exc):
+                _log_model_error(
+                    call_id=call_id,
+                    attempt=attempt_number,
+                    total_attempts=total_attempts,
+                    elapsed_seconds=elapsed_seconds,
+                    exc=exc,
+                    will_retry=False,
+                )
+
                 raise ModelDailyQuotaExceededError(
                     str(exc),
                     retry_after_seconds=(
@@ -351,12 +437,21 @@ def call_model_with_retries(
                     ),
                 ) from exc
 
-            last_error = exc
+            transient = is_transient_model_error(exc)
+            will_retry = (
+                transient
+                and attempt_index < retries
+            )
 
-            if (
-                attempt >= retries
-                or not is_transient_model_error(exc)
-            ):
+            if not will_retry:
+                _log_model_error(
+                    call_id=call_id,
+                    attempt=attempt_number,
+                    total_attempts=total_attempts,
+                    elapsed_seconds=elapsed_seconds,
+                    exc=exc,
+                    will_retry=False,
+                )
                 raise
 
             server_retry_delay = extract_retry_delay_seconds(exc)
@@ -364,14 +459,18 @@ def call_model_with_retries(
             if server_retry_delay is not None:
                 wait_seconds = server_retry_delay
             else:
-                wait_seconds = retry_delay * (2**attempt)
+                wait_seconds = retry_delay * (2**attempt_index)
 
-            print(
-                "Gecici Gemini hatasi alindi, "
-                f"{wait_seconds:.1f} saniye sonra tekrar denenecek "
-                f"({attempt + 1}/{retries})...",
-                file=sys.stderr,
+            _log_model_error(
+                call_id=call_id,
+                attempt=attempt_number,
+                total_attempts=total_attempts,
+                elapsed_seconds=elapsed_seconds,
+                exc=exc,
+                will_retry=True,
+                retry_in_seconds=wait_seconds,
             )
+
             sleep_func(wait_seconds)
 
     raise last_error
