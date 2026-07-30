@@ -124,13 +124,55 @@ def extract_response_text(response):
 
     return None
 
+def _parse_json_object(ai_output: str) -> dict | None:
+    if not isinstance(ai_output, str):
+        return None
+
+    text = ai_output.strip()
+
+    # Gemini bazen JSON cevabını Markdown code fence içinde döndürebilir.
+    if text.startswith("```"):
+        lines = text.splitlines()
+
+        if lines and lines[0].strip().lower() in {"```", "```json"}:
+            lines = lines[1:]
+
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        text = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        # JSON'un önünde veya arkasında kısa açıklama varsa
+        # ilk geçerli JSON nesnesini bulmaya çalış.
+        decoder = json.JSONDecoder()
+
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+
+            try:
+                candidate, _end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+
+            if isinstance(candidate, dict):
+                return candidate
+
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
+
 
 def normalize_json_response(ai_output):
-    try:
-        parsed = json.loads(ai_output)
-    except json.JSONDecodeError:
+    parsed = _parse_json_object(ai_output)
+
+    if parsed is None:
         return {
             "summary": "Model gecerli JSON donmedi; ham yanit asagidadir.",
+            "changes": [],
             "findings": [],
             "raw_response": ai_output,
         }
