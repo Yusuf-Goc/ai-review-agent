@@ -170,40 +170,39 @@ class PrReviewOutputSchemaTests(unittest.TestCase):
         self.assertIn("guvenilir", report)
         self.assertNotIn("Bulgu: Kritik hata bulunamadi.", report)
 
-def test_normalizer_accepts_markdown_fenced_json(self):
-    result = normalize_json_response(
-        """```json
+    def test_normalizer_accepts_markdown_fenced_json(self):
+        result = normalize_json_response(
+            """```json
 {
   "summary": "SQL incelemesi tamamlandı.",
   "changes": [],
   "findings": []
 }
 ```"""
-    )
+        )
 
-    self.assertEqual(
-        "SQL incelemesi tamamlandı.",
-        result["summary"],
-    )
-    self.assertNotIn("raw_response", result)
+        self.assertEqual(
+            "SQL incelemesi tamamlandı.",
+            result["summary"],
+        )
+        self.assertNotIn("raw_response", result)
 
-
-def test_normalizer_accepts_text_before_json(self):
-    result = normalize_json_response(
-        """İnceleme sonucu:
+    def test_normalizer_accepts_text_before_json(self):
+        result = normalize_json_response(
+            """İnceleme sonucu:
 {
   "summary": "SQL incelemesi tamamlandı.",
   "changes": [],
   "findings": []
 }
 """
-    )
+        )
 
-    self.assertEqual(
-        "SQL incelemesi tamamlandı.",
-        result["summary"],
-    )
-    self.assertNotIn("raw_response", result)
+        self.assertEqual(
+            "SQL incelemesi tamamlandı.",
+            result["summary"],
+        )
+        self.assertNotIn("raw_response", result)
 
 
 if __name__ == "__main__":
