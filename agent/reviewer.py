@@ -1,4 +1,5 @@
 from copy import deepcopy
+from pathlib import PurePosixPath
 
 from agent.config import (
     DEFAULT_MODEL,
@@ -85,6 +86,208 @@ def merge_changes(changes):
 
     return merged
 
+
+
+_SQL_DETERMINISTIC_SYMBOL_TYPES = {
+    "table",
+    "column",
+    "function",
+}
+
+
+def _normalized_change_type(value):
+    if value in {"added", "modified", "deleted"}:
+        return value
+    return "modified"
+
+
+def _has_meaningful_sql_diff(file_payload):
+    in_block_comment = False
+
+    for hunk in file_payload.get("hunks", []):
+        for line in hunk.get("lines", []):
+            if line.get("kind") not in {"added", "removed"}:
+                continue
+
+            content = str(line.get("content", ""))
+            index = 0
+
+            while index < len(content):
+                if in_block_comment:
+                    end = content.find("*/", index)
+                    if end < 0:
+                        index = len(content)
+                        continue
+                    in_block_comment = False
+                    index = end + 2
+                    continue
+
+                if content.startswith("--", index):
+                    break
+                if content.startswith("/*", index):
+                    in_block_comment = True
+                    index += 2
+                    continue
+                if content[index].isspace():
+                    index += 1
+                    continue
+                return True
+
+    return False
+
+
+def _deterministic_sql_change(
+    *,
+    path,
+    symbol,
+    symbol_type,
+    change_type,
+):
+    change = {
+        "file": path,
+        "symbol": symbol,
+        "symbol_type": symbol_type,
+        "change_type": change_type,
+    }
+
+    if symbol_type == "file":
+        change["after"] = "Yeni BigQuery SQL dosyasi eklendi."
+        change["behavior_change"] = (
+            "Dosyanin SQL icerigi repository'ye eklendi."
+        )
+        return change
+
+    labels = {
+        "query": "BigQuery sorgusu",
+        "table": "BigQuery tablo veya view tanimi",
+        "column": "BigQuery kolonu",
+        "function": "BigQuery routine tanimi",
+    }
+    label = labels.get(symbol_type, "BigQuery SQL sembolu")
+
+    if change_type == "added":
+        change["after"] = f"{label} eklendi: `{symbol}`."
+        change["behavior_change"] = (
+            f"`{symbol}` repository'de yeni bir SQL davranisi saglar."
+        )
+    elif change_type == "deleted":
+        change["before"] = f"{label} kaldirildi: `{symbol}`."
+        change["behavior_change"] = (
+            f"`{symbol}` artik yeni revision'da bulunmaz."
+        )
+    else:
+        change["before"] = f"{label} onceki revision'da mevcuttu."
+        change["after"] = f"{label} degistirildi: `{symbol}`."
+        change["behavior_change"] = (
+            f"`{symbol}` icin BigQuery SQL tanimi veya davranisi degisti."
+        )
+
+    return change
+
+
+def ensure_deterministic_sql_changes(
+    changes,
+    changed_symbols,
+    files,
+):
+    completed = merge_changes(changes)
+    existing = {
+        (
+            item.get("file"),
+            item.get("symbol"),
+            item.get("change_type"),
+        )
+        for item in completed
+        if isinstance(item, dict)
+    }
+
+    def append_missing(change):
+        key = (
+            change.get("file"),
+            change.get("symbol"),
+            change.get("change_type"),
+        )
+        if key in existing:
+            return
+        existing.add(key)
+        completed.append(change)
+
+    sql_symbols_by_file = {}
+    deterministic_symbols = []
+
+    for item in changed_symbols:
+        if not isinstance(item, dict):
+            continue
+
+        path = item.get("file")
+        symbol = item.get("symbol")
+        symbol_type = item.get("symbol_type")
+
+        if (
+            not isinstance(path, str)
+            or PurePosixPath(path).suffix.lower() != ".sql"
+            or not isinstance(symbol, str)
+            or not symbol
+            or symbol_type not in _SQL_DETERMINISTIC_SYMBOL_TYPES
+        ):
+            continue
+
+        normalized = dict(item)
+        normalized["change_type"] = _normalized_change_type(
+            item.get("change_type")
+        )
+        deterministic_symbols.append(normalized)
+        sql_symbols_by_file.setdefault(path, []).append(normalized)
+
+    for file_payload in files:
+        if not isinstance(file_payload, dict):
+            continue
+
+        path = file_payload.get("path")
+        if (
+            not isinstance(path, str)
+            or PurePosixPath(path).suffix.lower() != ".sql"
+        ):
+            continue
+
+        file_change_type = _normalized_change_type(
+            file_payload.get("change_type")
+        )
+
+        if file_change_type == "added":
+            append_missing(
+                _deterministic_sql_change(
+                    path=path,
+                    symbol="dosya geneli",
+                    symbol_type="file",
+                    change_type="added",
+                )
+            )
+
+        if (
+            path not in sql_symbols_by_file
+            and _has_meaningful_sql_diff(file_payload)
+        ):
+            append_missing(
+                _deterministic_sql_change(
+                    path=path,
+                    symbol=PurePosixPath(path).stem,
+                    symbol_type="query",
+                    change_type=file_change_type,
+                )
+            )
+
+    for item in deterministic_symbols:
+        append_missing(
+            _deterministic_sql_change(
+                path=item["file"],
+                symbol=item["symbol"],
+                symbol_type=item["symbol_type"],
+                change_type=item["change_type"],
+            )
+        )
+
+    return completed
 
 def _string_values(value):
     if not isinstance(value, list):
@@ -666,7 +869,11 @@ def analyze_diff_in_batches(
             + " ".join(summaries)
         ),
         "changes": apply_repository_relevance_evidence(
-            merge_changes(all_changes),
+            ensure_deterministic_sql_changes(
+                all_changes,
+                changed_symbols,
+                reviewable_files,
+            ),
             impact_result.get("impact_analysis", []),
             impact_result.get("status", "skipped"),
         ),

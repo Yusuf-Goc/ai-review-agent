@@ -3,7 +3,10 @@ import unittest
 
 from agent.github_reporter import format_github_markdown_report
 from agent.llm_client import build_review_prompt, normalize_json_response
-from agent.reviewer import apply_repository_relevance_evidence
+from agent.reviewer import (
+    apply_repository_relevance_evidence,
+    ensure_deterministic_sql_changes,
+)
 
 
 class PrChangeReportingTests(unittest.TestCase):
@@ -357,6 +360,253 @@ class PrChangeReportingTests(unittest.TestCase):
             "Mevcut repository dosyalarina baglanti kanitlanmadi",
             function_change["relevance_reason"],
         )
+
+
+    def test_deterministic_sql_changes_fill_model_omissions(self):
+        changes = [
+            {
+                "file": (
+                    "sql_agent_test/queries/"
+                    "new_customer_country_report.sql"
+                ),
+                "symbol": "dosya geneli",
+                "symbol_type": "file",
+                "change_type": "added",
+                "after": "Model tarafindan aciklanan yeni dosya.",
+            },
+            {
+                "file": "sql_agent_test/schema/customers.sql",
+                "symbol": "sales.customers",
+                "symbol_type": "table",
+                "change_type": "modified",
+                "behavior_change": "Model tablo aciklamasi korunmali.",
+            },
+        ]
+        changed_symbols = [
+            {
+                "file": "sql_agent_test/schema/customers.sql",
+                "symbol": "sales.customers",
+                "symbol_type": "table",
+                "change_type": "modified",
+            },
+            {
+                "file": "sql_agent_test/schema/customers.sql",
+                "symbol": "sales.customers.country",
+                "symbol_type": "column",
+                "change_type": "deleted",
+            },
+            {
+                "file": "sql_agent_test/schema/customers.sql",
+                "symbol": "sales.customers.country_code",
+                "symbol_type": "column",
+                "change_type": "added",
+            },
+        ]
+        files = [
+            {
+                "path": (
+                    "sql_agent_test/queries/"
+                    "new_customer_country_report.sql"
+                ),
+                "change_type": "added",
+                "hunks": [
+                    {
+                        "lines": [
+                            {
+                                "kind": "added",
+                                "content": (
+                                    "SELECT c.country_code "
+                                    "FROM `sales.customers` AS c;"
+                                ),
+                            }
+                        ]
+                    }
+                ],
+            },
+            {
+                "path": "sql_agent_test/schema/customers.sql",
+                "change_type": "modified",
+                "hunks": [
+                    {
+                        "lines": [
+                            {
+                                "kind": "removed",
+                                "content": "country STRING NOT NULL,",
+                            },
+                            {
+                                "kind": "added",
+                                "content": "country_code STRING NOT NULL,",
+                            },
+                        ]
+                    }
+                ],
+            },
+        ]
+
+        result = ensure_deterministic_sql_changes(
+            changes,
+            changed_symbols,
+            files,
+        )
+        by_key = {
+            (
+                item["file"],
+                item["symbol"],
+                item["change_type"],
+            ): item
+            for item in result
+        }
+
+        self.assertEqual(5, len(result))
+        self.assertIn(
+            (
+                "sql_agent_test/queries/"
+                "new_customer_country_report.sql",
+                "new_customer_country_report",
+                "added",
+            ),
+            by_key,
+        )
+        self.assertIn(
+            (
+                "sql_agent_test/schema/customers.sql",
+                "sales.customers.country",
+                "deleted",
+            ),
+            by_key,
+        )
+        self.assertIn(
+            (
+                "sql_agent_test/schema/customers.sql",
+                "sales.customers.country_code",
+                "added",
+            ),
+            by_key,
+        )
+        self.assertEqual(
+            "Model tablo aciklamasi korunmali.",
+            by_key[
+                (
+                    "sql_agent_test/schema/customers.sql",
+                    "sales.customers",
+                    "modified",
+                )
+            ]["behavior_change"],
+        )
+
+    def test_same_pr_only_deterministic_sql_column_stays_unclear(self):
+        query_path = (
+            "sql_agent_test/queries/"
+            "new_customer_country_report.sql"
+        )
+        schema_path = "sql_agent_test/schema/customers.sql"
+        changes = ensure_deterministic_sql_changes(
+            [],
+            [
+                {
+                    "file": schema_path,
+                    "symbol": "sales.customers.country_code",
+                    "symbol_type": "column",
+                    "change_type": "added",
+                }
+            ],
+            [
+                {
+                    "path": query_path,
+                    "change_type": "added",
+                    "hunks": [
+                        {
+                            "lines": [
+                                {
+                                    "kind": "added",
+                                    "content": (
+                                        "SELECT c.country_code "
+                                        "FROM `sales.customers` AS c;"
+                                    ),
+                                }
+                            ]
+                        }
+                    ],
+                },
+                {
+                    "path": schema_path,
+                    "change_type": "modified",
+                    "hunks": [],
+                },
+            ],
+        )
+
+        result = apply_repository_relevance_evidence(
+            changes,
+            [
+                {
+                    "symbol": "sales.customers.country_code",
+                    "symbol_type": "column",
+                    "changed_file": schema_path,
+                    "reference_files_base": [],
+                    "reference_files_head": [query_path],
+                }
+            ],
+            "completed",
+        )
+        by_symbol = {
+            item["symbol"]: item
+            for item in result
+        }
+
+        column = by_symbol["sales.customers.country_code"]
+        self.assertEqual(
+            "unclear",
+            column["repository_relevance"],
+        )
+        self.assertIn(
+            "Yalnizca ayni PR'da eklenen dosyalarda",
+            column["relevance_reason"],
+        )
+        self.assertIn(query_path, column["relevance_reason"])
+
+    def test_deterministic_sql_completion_leaves_python_and_go_unchanged(self):
+        changes = [
+            {
+                "file": "service.py",
+                "symbol": "calculate_total",
+                "symbol_type": "function",
+                "change_type": "modified",
+                "behavior_change": "Model aciklamasi.",
+            }
+        ]
+
+        result = ensure_deterministic_sql_changes(
+            changes,
+            [
+                {
+                    "file": "service.py",
+                    "symbol": "calculate_total",
+                    "symbol_type": "function",
+                    "change_type": "modified",
+                },
+                {
+                    "file": "service.go",
+                    "symbol": "CalculateTotal",
+                    "symbol_type": "function",
+                    "change_type": "modified",
+                },
+            ],
+            [
+                {
+                    "path": "service.py",
+                    "change_type": "modified",
+                    "hunks": [],
+                },
+                {
+                    "path": "service.go",
+                    "change_type": "modified",
+                    "hunks": [],
+                },
+            ],
+        )
+
+        self.assertEqual(changes, result)
 
 
 if __name__ == "__main__":
