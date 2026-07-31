@@ -6,6 +6,7 @@ from pathlib import Path
 from agent.repository_tools import (
     RepositoryToolError,
     compare_symbol,
+    find_bigquery_references,
     find_symbol_definitions,
     read_file_section,
     search_project_docs,
@@ -33,6 +34,34 @@ class RepositoryToolsTests(unittest.TestCase):
         (self.repo / "consumer.py").write_text(
             "from service import calculate_total\n\n"
             "result = calculate_total([10, 20])\n",
+            encoding="utf-8",
+        )
+        (self.repo / "schema.sql").write_text(
+            "CREATE TABLE sales.customers (\n"
+            "  id INT64 NOT NULL,\n"
+            "  country STRING NOT NULL\n"
+            ");\n",
+            encoding="utf-8",
+        )
+        (self.repo / "active_customers.sql").write_text(
+            "SELECT c.id, c.country\n"
+            "FROM sales.customers AS c\n"
+            "WHERE c.country = @country;\n",
+            encoding="utf-8",
+        )
+        (self.repo / "supplier_country.sql").write_text(
+            "SELECT s.country\n"
+            "FROM procurement.suppliers AS s\n"
+            "WHERE s.country = @country;\n",
+            encoding="utf-8",
+        )
+        (self.repo / "unqualified_customers.sql").write_text(
+            "SELECT c.country FROM customers AS c;\n",
+            encoding="utf-8",
+        )
+        (self.repo / "country_noise.sql").write_text(
+            "-- sales.customers.country is only a comment\n"
+            "SELECT 'country' AS label;\n",
             encoding="utf-8",
         )
         self._git("add", ".")
@@ -138,6 +167,50 @@ class RepositoryToolsTests(unittest.TestCase):
         self.assertIn("    return sum(items)", base_contents)
         self.assertIn("    return subtotal * 0.9", head_contents)
         self.assertEqual(3, len(result["head"]["occurrences"]))
+
+    def test_bigquery_table_references_use_dataset_and_alias_evidence(self):
+        result = find_bigquery_references(
+            self.repo,
+            self.head,
+            "sales.customers",
+            symbol_type="table",
+        )
+
+        confirmed_paths = {item["path"] for item in result["references"]}
+        possible_paths = {
+            item["path"] for item in result["possible_references"]
+        }
+
+        self.assertEqual({"active_customers.sql"}, confirmed_paths)
+        self.assertEqual({"unqualified_customers.sql"}, possible_paths)
+        self.assertNotIn("supplier_country.sql", confirmed_paths | possible_paths)
+        self.assertNotIn("country_noise.sql", confirmed_paths | possible_paths)
+
+    def test_bigquery_column_references_ignore_same_named_other_tables(self):
+        result = find_bigquery_references(
+            self.repo,
+            self.head,
+            "sales.customers.country",
+            symbol_type="column",
+        )
+
+        confirmed = result["references"]
+        possible = result["possible_references"]
+
+        self.assertEqual(
+            {"active_customers.sql"},
+            {item["path"] for item in confirmed},
+        )
+        self.assertTrue(
+            all(item["resolved_object"] == "sales.customers" for item in confirmed)
+        )
+        self.assertEqual(
+            {"unqualified_customers.sql"},
+            {item["path"] for item in possible},
+        )
+        self.assertFalse(
+            any(item["path"] == "supplier_country.sql" for item in confirmed + possible)
+        )
 
     def test_search_project_docs_uses_markdown_only(self):
         result = search_project_docs(

@@ -140,6 +140,46 @@ class FakeRuntime:
         }
 
 
+
+class FakeBigQueryRuntime(FakeRuntime):
+    def collect_reference_evidence(self, changed_symbols):
+        self.source_files.update(
+            {
+                "queries/active_customers.sql",
+                "queries/unqualified_customers.sql",
+            }
+        )
+        return {
+            "symbols": [
+                {
+                    "symbol": "sales.customers.country",
+                    "symbol_type": "column",
+                    "changed_file": "schema/customers.sql",
+                    "change_type": "modified",
+                    "evidence_mode": "bigquery_semantic",
+                    "references_base": [
+                        {
+                            "path": "queries/active_customers.sql",
+                            "line": 3,
+                            "confidence": "confirmed",
+                        }
+                    ],
+                    "references_head": [],
+                    "possible_references_base": [
+                        {
+                            "path": "queries/unqualified_customers.sql",
+                            "line": 2,
+                            "confidence": "possible",
+                        }
+                    ],
+                    "possible_references_head": [],
+                }
+            ],
+            "requested_symbol_count": 1,
+            "collected_symbol_count": 1,
+            "truncated": False,
+        }
+
 def function_call_response(name="find_symbol_references"):
     call = SimpleNamespace(
         name=name,
@@ -328,6 +368,66 @@ class FunctionCallingTests(unittest.TestCase):
         self.assertIn('"checkout.py"', prompt)
         self.assertIn('"reporting.py"', prompt)
 
+    def test_possible_bigquery_reference_is_not_forced_as_external_usage(self):
+        payload = {
+            "summary": "BigQuery kolon etkisi incelendi.",
+            "impact_analysis": [
+                {
+                    "symbol": "sales.customers.country",
+                    "symbol_type": "column",
+                    "changed_file": "schema/customers.sql",
+                    "change_type": "modified",
+                    "definition_files": ["schema/customers.sql"],
+                    "reference_files_base": [],
+                    "reference_files_head": [],
+                    "impact": "Kolon degisikligi sorgulari etkileyebilir.",
+                    "evidence": [],
+                }
+            ],
+        }
+        response = SimpleNamespace(
+            text=json.dumps(payload),
+            candidates=[
+                SimpleNamespace(
+                    content=FakeContent(
+                        role="model",
+                        parts=[FakePart(text=json.dumps(payload))],
+                    )
+                )
+            ],
+        )
+
+        result = analyze_repository_impact(
+            client=FakeClient([response]),
+            repo_root=".",
+            base_sha="base",
+            head_sha="head",
+            changed_symbols=[
+                {
+                    "file": "schema/customers.sql",
+                    "symbol": "sales.customers.country",
+                    "symbol_type": "column",
+                    "change_type": "modified",
+                }
+            ],
+            changed_paths=["schema/customers.sql"],
+            context_source_type="none",
+            context_sources=[],
+            runtime=FakeBigQueryRuntime(),
+            types_module=FakeTypes,
+            retries=0,
+        )
+
+        impact = result["impact_analysis"][0]
+        self.assertEqual(
+            ["queries/active_customers.sql"],
+            impact["external_reference_files"],
+        )
+        self.assertNotIn(
+            "queries/unqualified_customers.sql",
+            impact["external_reference_files"],
+        )
+
     def test_function_response_builder_falls_back_for_legacy_sdk(self):
         class LegacyTypes:
             Part = FakePart
@@ -484,6 +584,113 @@ class RepositoryRuntimeTests(unittest.TestCase):
             start_line=50,
             end_line=1_049,
             max_lines=1_000,
+        )
+
+    @patch("agent.function_calling.find_bigquery_references")
+    def test_sql_prefetch_uses_bigquery_semantic_evidence(self, find_bigquery):
+        find_bigquery.side_effect = [
+            {
+                "revision": "base-commit",
+                "references": [
+                    {
+                        "path": "queries/active_customers.sql",
+                        "line": 3,
+                        "confidence": "confirmed",
+                    }
+                ],
+                "possible_references": [
+                    {
+                        "path": "queries/unqualified_customers.sql",
+                        "line": 2,
+                        "confidence": "possible",
+                    }
+                ],
+                "truncated": False,
+            },
+            {
+                "revision": "head-commit",
+                "references": [],
+                "possible_references": [],
+                "truncated": False,
+            },
+        ]
+        runtime = RepositoryToolRuntime(
+            repo_root=".",
+            base_sha="base",
+            head_sha="head",
+        )
+
+        evidence = runtime.collect_reference_evidence(
+            [
+                {
+                    "file": "schema/customers.sql",
+                    "symbol": "sales.customers.country",
+                    "symbol_type": "column",
+                    "change_type": "modified",
+                }
+            ]
+        )
+
+        item = evidence["symbols"][0]
+        self.assertEqual("bigquery_semantic", item["evidence_mode"])
+        self.assertEqual(
+            ["queries/active_customers.sql"],
+            [ref["path"] for ref in item["references_base"]],
+        )
+        self.assertEqual(
+            ["queries/unqualified_customers.sql"],
+            [ref["path"] for ref in item["possible_references_base"]],
+        )
+        self.assertEqual(2, find_bigquery.call_count)
+        self.assertEqual("column", find_bigquery.call_args_list[0].kwargs["symbol_type"])
+        self.assertTrue(
+            all(
+                trace["name"] == "find_bigquery_references"
+                for trace in runtime.tool_trace
+            )
+        )
+
+    @patch("agent.function_calling.find_bigquery_references")
+    def test_sql_routine_prefetch_preserves_text_reference_search(
+        self,
+        find_bigquery,
+    ):
+        runtime = RepositoryToolRuntime(
+            repo_root=".",
+            base_sha="base",
+            head_sha="head",
+        )
+        text_result = {
+            "revision": "commit",
+            "symbol": "sales.calculate_country",
+            "references": [],
+            "truncated": False,
+        }
+
+        with patch.object(
+            runtime,
+            "_references",
+            return_value=text_result,
+        ) as text_references:
+            evidence = runtime.collect_reference_evidence(
+                [
+                    {
+                        "file": "routines/calculate_country.sql",
+                        "symbol": "sales.calculate_country",
+                        "symbol_type": "function",
+                        "change_type": "modified",
+                    }
+                ]
+            )
+
+        self.assertEqual(2, text_references.call_count)
+        find_bigquery.assert_not_called()
+        self.assertNotIn("evidence_mode", evidence["symbols"][0])
+        self.assertTrue(
+            all(
+                trace["name"] == "find_symbol_references"
+                for trace in runtime.tool_trace
+            )
         )
 
     def test_required_prefetch_does_not_consume_model_tool_budget(self):

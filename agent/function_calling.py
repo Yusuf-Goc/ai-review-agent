@@ -14,6 +14,7 @@ from agent.llm_client import call_model_with_retries, extract_response_text
 from agent.repository_tools import (
     RepositoryToolError,
     compare_symbol,
+    find_bigquery_references,
     find_symbol_definitions,
     read_file_section,
     search_project_docs,
@@ -325,25 +326,44 @@ class RepositoryToolRuntime:
                 "references_head": [],
             }
 
+            use_bigquery_semantic = (
+                str(item["changed_file"]).lower().endswith(".sql")
+                and item["symbol_type"] in {"table", "column"}
+            )
+
             for revision_alias in ("base", "head"):
                 args = {
                     "symbol": symbol,
                     "revision": revision_alias,
                     "max_results": 30,
                 }
+                tool_name = (
+                    "find_bigquery_references"
+                    if use_bigquery_semantic
+                    else "find_symbol_references"
+                )
                 trace = {
-                    "name": "find_symbol_references",
+                    "name": tool_name,
                     "args": args,
                     "status": "failed",
                     "origin": "required_reference_prefetch",
                 }
 
                 try:
-                    result = self._references(
-                        symbol,
-                        self._revision(revision_alias),
-                        30,
-                    )
+                    if use_bigquery_semantic:
+                        result = find_bigquery_references(
+                            self.repo_root,
+                            self._revision(revision_alias),
+                            symbol,
+                            symbol_type=item["symbol_type"],
+                            max_results=30,
+                        )
+                    else:
+                        result = self._references(
+                            symbol,
+                            self._revision(revision_alias),
+                            30,
+                        )
                     bounded = self._register_result(result, trace)
                     if isinstance(bounded, dict):
                         references = bounded.get("references", [])
@@ -353,6 +373,18 @@ class RepositoryToolRuntime:
                                 for reference in references
                                 if isinstance(reference, dict)
                             ]
+                        possible_references = bounded.get(
+                            "possible_references",
+                            [],
+                        )
+                        if isinstance(possible_references, list):
+                            item[f"possible_references_{revision_alias}"] = [
+                                reference
+                                for reference in possible_references
+                                if isinstance(reference, dict)
+                            ]
+                        if use_bigquery_semantic:
+                            item["evidence_mode"] = "bigquery_semantic"
                         item[f"{revision_alias}_truncated"] = bool(
                             bounded.get("truncated")
                         )
@@ -493,21 +525,28 @@ Sen kidemli bir repository etki analizi ajanisin. Asagidaki PR sembollerinin
 base ve head durumlarini repository tool'lariyla arastir.
 
 Kurallar:
-1. required_reference_evidence Python tarafinda zorunlu olarak toplanmis base/head kullanim kanitidir.
-2. Bu kanittaki tum dis dosya kullanimlarini ilgili impact kaydina ekle ve uyumlulugunu degerlendir.
-3. Degisen her anlamli sembol icin tanim ve kullanim noktalarini base ve head revisionlarda kontrol et.
-4. Fonksiyon veya degiskenin baska dosyalardaki kullanimlarini kanit olmadan uydurma.
-5. Gerekirse compare_symbol, find_symbol_references, read_file_section ve search_project_docs kullan.
-6. README ve Markdown destekleyici baglamdir; kaynak kod teknik gercekliktir.
-7. Yalnizca PR degisikliginin capraz dosya etkisini acikla.
-8. Hunk basligindan gelen ancak acik bir bildirim degisikligi olmayan ve base/head
-   davranisi ayni kalan sembolleri impact_analysis listesine ekleme.
-9. Fonksiyon veya method imzasi icin degisen dosya disinda referans kaniti varsa
-   critical breaking_change uygundur. Dis repository referansi yoksa bunu en fazla
-   high API uyumluluk riski olarak degerlendir; yalnizca olasi harici tuketici
-   varsayimiyla critical deme.
-10. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
-11. Tum aciklama metinleri Turkce olsun.
+1. required_reference_evidence agent tarafinda onceden toplanmis base/head kullanim kanitidir.
+2. evidence_mode `bigquery_semantic` olan SQL kayitlarinda references_base/head
+   kesin BigQuery kanitidir ve ilgili impact kaydina eklenmelidir.
+3. possible_references_base/head yalnizca BigQuery aday kanitidir; ilgili dosyayi
+   okuyup dogrulamadan kesin dis kullanim veya breaking change kaniti sayma.
+4. Bu kanittaki kesin dis dosya kullanimlarini ilgili impact kaydina ekle ve
+   uyumlulugunu degerlendir.
+5. Degisen her anlamli sembol icin tanim ve kullanim noktalarini base ve head
+   revisionlarda kontrol et.
+6. Fonksiyon veya degiskenin baska dosyalardaki kullanimlarini kanit olmadan uydurma.
+7. Gerekirse compare_symbol, find_symbol_references, read_file_section ve
+   search_project_docs kullan.
+8. README ve Markdown destekleyici baglamdir; kaynak kod teknik gercekliktir.
+9. Yalnizca PR degisikliginin capraz dosya etkisini acikla.
+10. Hunk basligindan gelen ancak acik bir bildirim degisikligi olmayan ve base/head
+    davranisi ayni kalan sembolleri impact_analysis listesine ekleme.
+11. Fonksiyon veya method imzasi icin degisen dosya disinda referans kaniti varsa
+    critical breaking_change uygundur. Dis repository referansi yoksa bunu en fazla
+    high API uyumluluk riski olarak degerlendir; yalnizca olasi harici tuketici
+    varsayimiyla critical deme.
+12. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
+13. Tum aciklama metinleri Turkce olsun.
 
 Beklenen JSON semasi:
 {{
@@ -515,7 +554,7 @@ Beklenen JSON semasi:
   "impact_analysis": [
     {{
       "symbol": "sembol_adi",
-      "symbol_type": "function|method|class|struct|variable|table|query|unknown",
+      "symbol_type": "function|method|class|struct|variable|table|column|query|unknown",
       "changed_file": "degisen/dosya.py",
       "change_type": "added|modified|deleted|renamed|behavior_changed",
       "definition_files": ["tanim/dosyasi.py"],

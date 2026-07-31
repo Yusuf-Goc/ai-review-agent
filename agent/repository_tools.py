@@ -1,8 +1,10 @@
 import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from agent.bigquery_evidence import analyze_bigquery_sql
 from agent.config import get_bounded_int_env
 
 
@@ -28,6 +30,18 @@ MAX_READ_LINES = get_bounded_int_env(
     1_000,
     minimum=1,
     maximum=5_000,
+)
+MAX_BIGQUERY_SCAN_FILES = get_bounded_int_env(
+    "AI_REVIEW_MAX_BIGQUERY_SCAN_FILES",
+    500,
+    minimum=1,
+    maximum=5_000,
+)
+MAX_BIGQUERY_FILE_CHARS = get_bounded_int_env(
+    "AI_REVIEW_MAX_BIGQUERY_FILE_CHARS",
+    1_000_000,
+    minimum=1_000,
+    maximum=5_000_000,
 )
 
 
@@ -286,6 +300,281 @@ def search_symbol(
         max_results=max_results,
     )
 
+
+
+def _bigquery_identifier_parts(value: str) -> list[str]:
+    stripped = _validate_symbol(value).strip("`")
+    return [part.strip("`").casefold() for part in stripped.split(".") if part]
+
+
+def _bigquery_object_match(
+    target_parts: list[str],
+    candidate: dict[str, Any],
+) -> str | None:
+    candidate_parts = [
+        str(part).casefold()
+        for part in (
+            candidate.get("project"),
+            candidate.get("dataset"),
+            candidate.get("object"),
+        )
+        if isinstance(part, str) and part
+    ]
+    if not target_parts or not candidate_parts:
+        return None
+
+    if len(target_parts) >= 3:
+        return "confirmed" if candidate_parts[-3:] == target_parts[-3:] else None
+    if len(target_parts) == 2:
+        if len(candidate_parts) >= 2 and candidate_parts[-2:] == target_parts:
+            return "confirmed"
+        if candidate_parts[-1] == target_parts[-1] and len(candidate_parts) == 1:
+            return "possible"
+        return None
+
+    if candidate_parts[-1] != target_parts[-1]:
+        return None
+    return "possible"
+
+
+def _bigquery_reference_match(
+    *,
+    symbol: str,
+    symbol_type: str,
+    candidate: dict[str, Any],
+) -> str | None:
+    target_parts = _bigquery_identifier_parts(symbol)
+    normalized_type = str(symbol_type or "unknown").casefold()
+
+    if normalized_type == "column":
+        candidate_column = candidate.get("resolved_column")
+        if not isinstance(candidate_column, str) or not candidate_column:
+            return None
+        column_parts = [part.casefold() for part in candidate_column.split(".") if part]
+        if not column_parts:
+            return None
+
+        target_column = target_parts[-1] if target_parts else ""
+        if column_parts[-1] != target_column:
+            return None
+
+        target_object_parts = target_parts[:-1]
+        if not target_object_parts:
+            return "possible"
+
+        object_match = _bigquery_object_match(target_object_parts, candidate)
+        if object_match is None:
+            return None
+        if candidate.get("confidence") != "confirmed":
+            return "possible"
+        return object_match
+
+    object_match = _bigquery_object_match(target_parts, candidate)
+    if object_match is None:
+        return None
+    if candidate.get("confidence") != "confirmed":
+        return "possible"
+    return object_match
+
+
+def _bigquery_reference_item(
+    *,
+    path: str,
+    file_lines: list[str],
+    candidate: dict[str, Any],
+    confidence: str,
+    reference_type: str,
+) -> dict[str, Any]:
+    line = candidate.get("line")
+    content = ""
+    if isinstance(line, int) and 1 <= line <= len(file_lines):
+        content = file_lines[line - 1]
+
+    return {
+        "path": path,
+        "line": line,
+        "content": content,
+        "confidence": confidence,
+        "reference_type": reference_type,
+        "raw_reference": (
+            candidate.get("raw_reference")
+            or candidate.get("raw_name")
+            or ""
+        ),
+        "resolved_object": (
+            candidate.get("resolved_object")
+            or candidate.get("qualified_name")
+            or None
+        ),
+        "resolved_column": candidate.get("resolved_column"),
+        "clause": candidate.get("clause"),
+        "reason": candidate.get("reason", ""),
+    }
+
+
+@lru_cache(maxsize=8)
+def _build_bigquery_repository_index(
+    repo_root: str,
+    commit: str,
+) -> dict[str, Any]:
+    sql_files = list_repository_files(
+        repo_root,
+        commit,
+        extensions={".sql"},
+    )
+    analyzed_files = []
+    parse_errors = []
+    skipped_files = []
+
+    for path in sql_files[:MAX_BIGQUERY_SCAN_FILES]:
+        result = _run_git(repo_root, ["show", f"{commit}:{path}"])
+        source_text = result.stdout
+        if len(source_text) > MAX_BIGQUERY_FILE_CHARS:
+            skipped_files.append({
+                "path": path,
+                "reason": "SQL dosyasi BigQuery evidence karakter limitini asti.",
+            })
+            continue
+
+        analysis = analyze_bigquery_sql(source_text, path=path)
+        analyzed_files.append({
+            "path": path,
+            "lines": source_text.splitlines(),
+            "analysis": analysis,
+        })
+        for error in analysis.get("errors", []):
+            parse_errors.append({"path": path, **error})
+
+    return {
+        "files": analyzed_files,
+        "parse_errors": parse_errors,
+        "skipped_files": skipped_files,
+        "scanned_file_count": min(len(sql_files), MAX_BIGQUERY_SCAN_FILES),
+        "requested_file_count": len(sql_files),
+        "truncated": len(sql_files) > MAX_BIGQUERY_SCAN_FILES,
+    }
+
+
+def find_bigquery_references(
+    repo_root: str | Path,
+    revision: str,
+    symbol: str,
+    *,
+    symbol_type: str = "table",
+    max_results: int = 50,
+) -> dict[str, Any]:
+    """BigQuery SQL referanslarini alias/dataset kanitiyla siniflandirir.
+
+    ``references`` yalnizca kesin cozulmus kanitlari, ``possible_references``
+    ise default dataset veya lineage bilgisi gerektiren adaylari icerir.
+    Python ve Go sembol aramasi bu fonksiyondan etkilenmez.
+    """
+    if max_results < 1 or max_results > MAX_SEARCH_RESULTS:
+        raise RepositoryToolError(
+            f"max_results 1 ile {MAX_SEARCH_RESULTS} arasinda olmalidir."
+        )
+
+    safe_symbol = _validate_symbol(symbol)
+    commit = resolve_revision(repo_root, revision)
+    resolved_root = str(Path(repo_root).resolve())
+    repository_index = _build_bigquery_repository_index(
+        resolved_root,
+        commit,
+    )
+
+    confirmed: list[dict[str, Any]] = []
+    possible: list[dict[str, Any]] = []
+    ignored_count = 0
+    total_candidates = 0
+
+    for file_item in repository_index["files"]:
+        path = file_item["path"]
+        analysis = file_item["analysis"]
+        file_lines = file_item["lines"]
+
+        normalized_type = str(symbol_type or "unknown").casefold()
+        if normalized_type == "column":
+            candidates = analysis.get("references", [])
+            reference_type = "column"
+        else:
+            candidates = analysis.get("sources", [])
+            reference_type = "object"
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("confidence") == "ignored":
+                ignored_count += 1
+                continue
+
+            confidence = _bigquery_reference_match(
+                symbol=safe_symbol,
+                symbol_type=normalized_type,
+                candidate=candidate,
+            )
+            if confidence is None:
+                continue
+
+            total_candidates += 1
+            item = _bigquery_reference_item(
+                path=path,
+                file_lines=file_lines,
+                candidate=candidate,
+                confidence=confidence,
+                reference_type=reference_type,
+            )
+            if confidence == "confirmed":
+                confirmed.append(item)
+            else:
+                possible.append(item)
+
+    def deduplicate(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for item in items:
+            key = (
+                item.get("path"),
+                item.get("line"),
+                item.get("raw_reference"),
+                item.get("resolved_object"),
+                item.get("resolved_column"),
+            )
+            unique.setdefault(key, item)
+        return sorted(
+            unique.values(),
+            key=lambda item: (
+                str(item.get("path", "")),
+                int(item.get("line") or 0),
+                str(item.get("raw_reference", "")),
+            ),
+        )
+
+    confirmed = deduplicate(confirmed)
+    possible = deduplicate(possible)
+    combined_count = len(confirmed) + len(possible)
+    truncated = (
+        repository_index["truncated"]
+        or combined_count > max_results
+    )
+
+    confirmed = confirmed[:max_results]
+    remaining = max(0, max_results - len(confirmed))
+    possible = possible[:remaining]
+
+    return {
+        "revision": commit,
+        "dialect": "bigquery",
+        "symbol": safe_symbol,
+        "symbol_type": symbol_type,
+        "references": confirmed,
+        "possible_references": possible,
+        "ignored_count": ignored_count,
+        "scanned_file_count": repository_index["scanned_file_count"],
+        "requested_file_count": repository_index["requested_file_count"],
+        "parse_errors": repository_index["parse_errors"],
+        "skipped_files": repository_index["skipped_files"],
+        "candidate_count": total_candidates,
+        "truncated": truncated,
+    }
 
 def search_project_docs(
     repo_root: str | Path,
