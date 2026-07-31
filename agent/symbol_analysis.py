@@ -2,6 +2,8 @@ import re
 from pathlib import PurePosixPath
 from typing import Any
 
+from agent.bigquery_evidence import analyze_bigquery_sql
+
 
 SUPPORTED_EXTENSIONS = {".py", ".go", ".sql"}
 
@@ -64,21 +66,22 @@ def _sql_symbol(line: str) -> tuple[str, str] | None:
     object_match = re.match(
         r"^\s*(?:CREATE|ALTER|DROP)"
         r"(?:\s+OR\s+REPLACE)?\s+"
-        r"(TABLE|VIEW|FUNCTION|PROCEDURE|TRIGGER)\s+"
+        r"(TABLE\s+FUNCTION|TABLE|VIEW|FUNCTION|PROCEDURE|TRIGGER)\s+"
         r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
-        r"([`\"\[\]A-Za-z_][`\"\[\]A-Za-z0-9_.$]*)",
+        r"(`[^`]+`|[A-Za-z_][A-Za-z0-9_.$-]*)",
         line,
         re.IGNORECASE,
     )
     if not object_match:
         return None
 
-    object_type = object_match.group(1).lower()
+    object_type = re.sub(r"\s+", "_", object_match.group(1).lower())
     symbol = _clean_sql_identifier(object_match.group(2))
     symbol_type = {
         "table": "table",
         "view": "table",
         "function": "function",
+        "table_function": "function",
         "procedure": "function",
         "trigger": "unknown",
     }[object_type]
@@ -121,6 +124,329 @@ def _is_comment_or_blank(path: str, line: str) -> bool:
     return False
 
 
+
+def _event(
+    events: dict[tuple[str, str, str], dict[str, Any]],
+    *,
+    path: str,
+    symbol: str,
+    symbol_type: str,
+) -> dict[str, Any]:
+    key = (path, symbol, symbol_type)
+    return events.setdefault(
+        key,
+        {
+            "file": path,
+            "symbol": symbol,
+            "symbol_type": symbol_type,
+            "change_kinds": set(),
+            "source_lines": [],
+            "target_lines": [],
+            "detected_from": set(),
+        },
+    )
+
+
+def _record_event(
+    events: dict[tuple[str, str, str], dict[str, Any]],
+    *,
+    path: str,
+    symbol: str,
+    symbol_type: str,
+    change_type: str,
+    source_lines: set[int],
+    target_lines: set[int],
+    detected_from: str,
+) -> None:
+    if not symbol:
+        return
+
+    event = _event(
+        events,
+        path=path,
+        symbol=symbol,
+        symbol_type=symbol_type,
+    )
+    if change_type == "added":
+        event["change_kinds"].add("added")
+    elif change_type == "deleted":
+        event["change_kinds"].add("removed")
+    else:
+        event["change_kinds"].update({"added", "removed"})
+
+    event["source_lines"].extend(source_lines)
+    event["target_lines"].extend(target_lines)
+    event["detected_from"].add(detected_from)
+
+
+def _sql_fragment_side(
+    path: str,
+    hunk: dict[str, Any],
+    *,
+    side: str,
+) -> tuple[str, dict[int, dict[str, Any]]]:
+    if side not in {"base", "head"}:
+        raise ValueError("side base veya head olmalidir.")
+
+    selected: list[str] = []
+    line_map: dict[int, dict[str, Any]] = {}
+    excluded_kind = "added" if side == "base" else "removed"
+    changed_kind = "removed" if side == "base" else "added"
+    number_field = "source_line" if side == "base" else "target_line"
+
+    section_header = hunk.get("section_header") or ""
+    if detect_symbol(path, section_header):
+        hunk_contents = {
+            str(line.get("content", "")).strip()
+            for line in hunk.get("lines", [])
+        }
+        if section_header.strip() not in hunk_contents:
+            selected.append(section_header)
+            fallback_line = hunk.get(
+                "source_start" if side == "base" else "target_start"
+            )
+            line_map[len(selected)] = {
+                "actual_line": fallback_line,
+                "changed": False,
+            }
+
+    for line in hunk.get("lines", []):
+        kind = line.get("kind")
+        if kind in {excluded_kind, "truncated"}:
+            continue
+
+        selected.append(str(line.get("content", "")))
+        line_map[len(selected)] = {
+            "actual_line": line.get(number_field),
+            "changed": kind == changed_kind,
+        }
+
+    return "\n".join(selected), line_map
+
+
+def _sql_symbol_type(object_type: Any) -> str | None:
+    normalized = str(object_type or "").casefold()
+    if normalized in {"table", "view"}:
+        return "table"
+    if normalized == "column":
+        return "column"
+    if normalized in {"function", "table_function", "procedure"}:
+        return "function"
+    return None
+
+
+def _sql_state(
+    states: dict[tuple[str, str], dict[str, Any]],
+    *,
+    symbol: str,
+    symbol_type: str,
+    effect: str,
+    line: int | None,
+) -> None:
+    if not symbol or effect not in {"present", "absent", "modified"}:
+        return
+
+    state = states.setdefault(
+        (symbol, symbol_type),
+        {"effects": set(), "lines": set()},
+    )
+    state["effects"].add(effect)
+    if isinstance(line, int):
+        state["lines"].add(line)
+
+
+def _collapsed_sql_effect(state: dict[str, Any] | None) -> str | None:
+    if not state:
+        return None
+    effects = set(state.get("effects", set()))
+    if effects == {"present"}:
+        return "present"
+    if effects == {"absent"}:
+        return "absent"
+    if effects:
+        return "modified"
+    return None
+
+
+def _sql_change_type(
+    base_effect: str | None,
+    head_effect: str | None,
+) -> str | None:
+    if base_effect == head_effect:
+        if base_effect in {"present", "modified"}:
+            return "modified"
+        return None
+
+    if "modified" in {base_effect, head_effect}:
+        return "modified"
+
+    if head_effect == "present":
+        return "added" if base_effect in {None, "absent"} else "modified"
+    if head_effect == "absent":
+        return "deleted" if base_effect in {None, "present"} else "modified"
+
+    if head_effect is None:
+        if base_effect == "present":
+            return "deleted"
+        if base_effect == "absent":
+            return "added"
+
+    return None
+
+
+def _collect_sql_side_states(
+    *,
+    path: str,
+    sql_text: str,
+    line_map: dict[int, dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    states: dict[tuple[str, str], dict[str, Any]] = {}
+    if not sql_text.strip():
+        return states
+
+    analysis = analyze_bigquery_sql(sql_text, path=path)
+
+    for definition in analysis.get("definitions", []):
+        if not isinstance(definition, dict):
+            continue
+        location = line_map.get(definition.get("line"), {})
+        if not location.get("changed"):
+            continue
+
+        symbol_type = _sql_symbol_type(definition.get("object_type"))
+        symbol = definition.get("qualified_name")
+        action = str(definition.get("action", "create")).casefold()
+        if not symbol_type or not isinstance(symbol, str):
+            continue
+
+        effect = {
+            "create": "present",
+            "alter": "modified",
+            "drop": "absent",
+        }.get(action, "modified")
+        actual_line = location.get("actual_line")
+        _sql_state(
+            states,
+            symbol=symbol,
+            symbol_type=symbol_type,
+            effect=effect,
+            line=actual_line,
+        )
+
+        if symbol_type == "column":
+            parent = ".".join(symbol.split(".")[:-1])
+            _sql_state(
+                states,
+                symbol=parent,
+                symbol_type="table",
+                effect="modified",
+                line=actual_line,
+            )
+
+    for mutation in analysis.get("mutations", []):
+        if not isinstance(mutation, dict):
+            continue
+        location = line_map.get(mutation.get("line"), {})
+        if not location.get("changed"):
+            continue
+
+        table_symbol = mutation.get("qualified_name")
+        actual_line = location.get("actual_line")
+        if not isinstance(table_symbol, str) or not table_symbol:
+            continue
+
+        _sql_state(
+            states,
+            symbol=table_symbol,
+            symbol_type="table",
+            effect="modified",
+            line=actual_line,
+        )
+
+        action = str(mutation.get("action", "")).casefold()
+        column = mutation.get("column")
+        if not isinstance(column, str) or not column:
+            continue
+
+        old_symbol = f"{table_symbol}.{column}"
+        if action == "add_column":
+            _sql_state(
+                states,
+                symbol=old_symbol,
+                symbol_type="column",
+                effect="present",
+                line=actual_line,
+            )
+        elif action == "drop_column":
+            _sql_state(
+                states,
+                symbol=old_symbol,
+                symbol_type="column",
+                effect="absent",
+                line=actual_line,
+            )
+        elif action == "rename_column":
+            _sql_state(
+                states,
+                symbol=old_symbol,
+                symbol_type="column",
+                effect="absent",
+                line=actual_line,
+            )
+            new_column = mutation.get("new_column")
+            if isinstance(new_column, str) and new_column:
+                _sql_state(
+                    states,
+                    symbol=f"{table_symbol}.{new_column}",
+                    symbol_type="column",
+                    effect="present",
+                    line=actual_line,
+                )
+
+    return states
+
+
+def _collect_bigquery_hunk_events(
+    events: dict[tuple[str, str, str], dict[str, Any]],
+    *,
+    path: str,
+    hunk: dict[str, Any],
+) -> None:
+    base_text, base_map = _sql_fragment_side(path, hunk, side="base")
+    head_text, head_map = _sql_fragment_side(path, hunk, side="head")
+    base_states = _collect_sql_side_states(
+        path=path,
+        sql_text=base_text,
+        line_map=base_map,
+    )
+    head_states = _collect_sql_side_states(
+        path=path,
+        sql_text=head_text,
+        line_map=head_map,
+    )
+
+    for symbol_key in sorted(set(base_states) | set(head_states)):
+        base_state = base_states.get(symbol_key)
+        head_state = head_states.get(symbol_key)
+        change_type = _sql_change_type(
+            _collapsed_sql_effect(base_state),
+            _collapsed_sql_effect(head_state),
+        )
+        if change_type is None:
+            continue
+
+        symbol, symbol_type = symbol_key
+        _record_event(
+            events,
+            path=path,
+            symbol=symbol,
+            symbol_type=symbol_type,
+            change_type=change_type,
+            source_lines=set(base_state.get("lines", set())) if base_state else set(),
+            target_lines=set(head_state.get("lines", set())) if head_state else set(),
+            detected_from="bigquery_evidence",
+        )
+
 def extract_changed_symbols(review_payload: dict[str, Any]) -> list[dict[str, Any]]:
     events: dict[tuple[str, str, str], dict[str, Any]] = {}
 
@@ -128,6 +454,15 @@ def extract_changed_symbols(review_payload: dict[str, Any]) -> list[dict[str, An
         path = file_payload.get("path", "")
         extension = PurePosixPath(path).suffix.lower()
         if extension not in SUPPORTED_EXTENSIONS:
+            continue
+
+        if extension == ".sql":
+            for hunk in file_payload.get("hunks", []):
+                _collect_bigquery_hunk_events(
+                    events,
+                    path=path,
+                    hunk=hunk,
+                )
             continue
 
         for hunk in file_payload.get("hunks", []):

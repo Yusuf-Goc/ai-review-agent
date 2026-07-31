@@ -1,6 +1,6 @@
 import unittest
 
-from agent.symbol_analysis import extract_changed_symbols
+from agent.symbol_analysis import detect_symbol, extract_changed_symbols
 
 
 class SymbolAnalysisTests(unittest.TestCase):
@@ -230,6 +230,225 @@ class SymbolAnalysisTests(unittest.TestCase):
         }
 
         self.assertEqual([], extract_changed_symbols(payload))
+
+
+    def test_extracts_bigquery_rename_column_symbols(self):
+        payload = {
+            "files": [
+                {
+                    "path": "schema/customers.sql",
+                    "hunks": [
+                        {
+                            "section_header": "",
+                            "lines": [
+                                {
+                                    "kind": "added",
+                                    "target_line": 10,
+                                    "content": (
+                                        "ALTER TABLE `vestel-data.sales.customers`"
+                                    ),
+                                },
+                                {
+                                    "kind": "added",
+                                    "target_line": 11,
+                                    "content": (
+                                        "RENAME COLUMN country TO country_code;"
+                                    ),
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result = extract_changed_symbols(payload)
+        by_symbol = {item["symbol"]: item for item in result}
+
+        self.assertEqual(
+            "modified",
+            by_symbol["vestel-data.sales.customers"]["change_type"],
+        )
+        self.assertEqual(
+            "deleted",
+            by_symbol["vestel-data.sales.customers.country"]["change_type"],
+        )
+        self.assertEqual(
+            "added",
+            by_symbol["vestel-data.sales.customers.country_code"]["change_type"],
+        )
+        self.assertEqual(
+            [11],
+            by_symbol["vestel-data.sales.customers.country"]["target_lines"],
+        )
+        self.assertEqual(
+            ["bigquery_evidence"],
+            by_symbol["vestel-data.sales.customers.country"]["detected_from"],
+        )
+
+    def test_extracts_bigquery_add_and_drop_column_symbols(self):
+        payload = {
+            "files": [
+                {
+                    "path": "schema/add_loyalty.sql",
+                    "hunks": [
+                        {
+                            "section_header": "",
+                            "lines": [
+                                {
+                                    "kind": "added",
+                                    "target_line": 1,
+                                    "content": (
+                                        "ALTER TABLE sales.customers "
+                                        "ADD COLUMN loyalty_tier STRING;"
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "path": "schema/drop_country.sql",
+                    "hunks": [
+                        {
+                            "section_header": "",
+                            "lines": [
+                                {
+                                    "kind": "added",
+                                    "target_line": 1,
+                                    "content": (
+                                        "ALTER TABLE sales.customers "
+                                        "DROP COLUMN country;"
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ]
+        }
+
+        result = extract_changed_symbols(payload)
+        changes = {
+            (item["file"], item["symbol"]): item["change_type"]
+            for item in result
+        }
+
+        self.assertEqual(
+            "added",
+            changes[(
+                "schema/add_loyalty.sql",
+                "sales.customers.loyalty_tier",
+            )],
+        )
+        self.assertEqual(
+            "deleted",
+            changes[(
+                "schema/drop_country.sql",
+                "sales.customers.country",
+            )],
+        )
+        self.assertEqual(
+            "modified",
+            changes[("schema/add_loyalty.sql", "sales.customers")],
+        )
+        self.assertEqual(
+            "modified",
+            changes[("schema/drop_country.sql", "sales.customers")],
+        )
+
+    def test_extracts_modified_bigquery_create_table_column(self):
+        payload = {
+            "files": [
+                {
+                    "path": "schema/customers.sql",
+                    "hunks": [
+                        {
+                            "section_header": "",
+                            "lines": [
+                                {
+                                    "kind": "context",
+                                    "source_line": 1,
+                                    "target_line": 1,
+                                    "content": "CREATE TABLE sales.customers (",
+                                },
+                                {
+                                    "kind": "context",
+                                    "source_line": 2,
+                                    "target_line": 2,
+                                    "content": "    id INT64,",
+                                },
+                                {
+                                    "kind": "removed",
+                                    "source_line": 3,
+                                    "target_line": None,
+                                    "content": "    country VARCHAR(2),",
+                                },
+                                {
+                                    "kind": "added",
+                                    "source_line": None,
+                                    "target_line": 3,
+                                    "content": "    country STRING,",
+                                },
+                                {
+                                    "kind": "context",
+                                    "source_line": 4,
+                                    "target_line": 4,
+                                    "content": "    status STRING",
+                                },
+                                {
+                                    "kind": "context",
+                                    "source_line": 5,
+                                    "target_line": 5,
+                                    "content": ");",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result = extract_changed_symbols(payload)
+        by_symbol = {item["symbol"]: item for item in result}
+
+        self.assertEqual(
+            "modified",
+            by_symbol["sales.customers.country"]["change_type"],
+        )
+        self.assertEqual(
+            [3],
+            by_symbol["sales.customers.country"]["source_lines"],
+        )
+        self.assertEqual(
+            [3],
+            by_symbol["sales.customers.country"]["target_lines"],
+        )
+        self.assertEqual(
+            "modified",
+            by_symbol["sales.customers"]["change_type"],
+        )
+
+    def test_detects_bigquery_table_function_without_changing_other_languages(self):
+        table_function = detect_symbol(
+            "routine.sql",
+            "CREATE OR REPLACE TABLE FUNCTION sales.export_country(",
+        )
+        python_symbol = detect_symbol(
+            "service.py",
+            "def calculate_total(items):",
+        )
+        go_symbol = detect_symbol(
+            "service.go",
+            "func CalculateTotal(items []int) int {",
+        )
+
+        self.assertEqual(
+            ("sales.export_country", "function"),
+            table_function,
+        )
+        self.assertEqual(("calculate_total", "function"), python_symbol)
+        self.assertEqual(("CalculateTotal", "function"), go_symbol)
 
 
 if __name__ == "__main__":
