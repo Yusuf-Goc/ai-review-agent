@@ -167,6 +167,62 @@ class PrChangeReportingTests(unittest.TestCase):
             result[1]["relevance_reason"],
         )
 
+    def test_same_pr_only_sql_column_usage_stays_unclear(self):
+        changes = [
+            {
+                "file": "sql_agent_test/schema/customers.sql",
+                "symbol": "sales.customers.country_code",
+                "symbol_type": "column",
+                "change_type": "added",
+                "repository_relevance": "related",
+            },
+            {
+                "file": (
+                    "sql_agent_test/queries/"
+                    "new_customer_country_report.sql"
+                ),
+                "symbol": "dosya geneli",
+                "symbol_type": "file",
+                "change_type": "added",
+            },
+        ]
+        impact_analysis = [
+            {
+                "symbol": "sales.customers.country_code",
+                "symbol_type": "column",
+                "changed_file": (
+                    "sql_agent_test/schema/customers.sql"
+                ),
+                "reference_files_base": [],
+                "reference_files_head": [
+                    (
+                        "sql_agent_test/queries/"
+                        "new_customer_country_report.sql"
+                    )
+                ],
+            }
+        ]
+
+        result = apply_repository_relevance_evidence(
+            changes,
+            impact_analysis,
+            "completed",
+        )
+
+        column_change = result[0]
+        self.assertEqual(
+            "unclear",
+            column_change["repository_relevance"],
+        )
+        self.assertIn(
+            "Yalnizca ayni PR'da eklenen dosyalarda",
+            column_change["relevance_reason"],
+        )
+        self.assertIn(
+            "new_customer_country_report.sql",
+            column_change["relevance_reason"],
+        )
+
     def test_external_repository_usage_marks_added_items_related(self):
         changes = [
             {

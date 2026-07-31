@@ -230,6 +230,7 @@ def apply_repository_relevance_evidence(
         "struct",
         "table",
         "query",
+        "column",
     }
 
     change_items = [
