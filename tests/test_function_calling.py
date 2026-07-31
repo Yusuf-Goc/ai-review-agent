@@ -712,6 +712,71 @@ class RepositoryRuntimeTests(unittest.TestCase):
             )
         )
 
+
+    @patch("agent.function_calling.find_bigquery_references")
+    def test_sql_prefetch_preserves_transitive_counts_and_paths(
+        self,
+        find_bigquery,
+    ):
+        transitive = {
+            "path": "queries/customer_dashboard.sql",
+            "line": 2,
+            "confidence": "confirmed",
+            "reference_type": "transitive",
+            "dependency_kind": "transitive",
+            "dependency_depth": 2,
+            "dependency_path": [
+                "sales.customers.country",
+                "sales.customer_view",
+                "analytics.customer_summary",
+                "queries/customer_dashboard.sql",
+            ],
+        }
+        find_bigquery.side_effect = [
+            {
+                "revision": "base-commit",
+                "references": [transitive],
+                "possible_references": [],
+                "direct_reference_count": 0,
+                "transitive_reference_count": 1,
+                "truncated": False,
+            },
+            {
+                "revision": "head-commit",
+                "references": [],
+                "possible_references": [],
+                "direct_reference_count": 0,
+                "transitive_reference_count": 0,
+                "truncated": False,
+            },
+        ]
+        runtime = RepositoryToolRuntime(
+            repo_root=".",
+            base_sha="base",
+            head_sha="head",
+        )
+
+        evidence = runtime.collect_reference_evidence(
+            [{
+                "file": "schema/customers.sql",
+                "symbol": "sales.customers.country",
+                "symbol_type": "column",
+                "change_type": "deleted",
+            }]
+        )
+        item = evidence["symbols"][0]
+
+        self.assertEqual(1, item["transitive_reference_count_base"])
+        self.assertEqual(0, item["direct_reference_count_base"])
+        self.assertEqual(
+            2,
+            item["references_base"][0]["dependency_depth"],
+        )
+        self.assertEqual(
+            "transitive",
+            item["references_base"][0]["dependency_kind"],
+        )
+
     def test_required_prefetch_does_not_consume_model_tool_budget(self):
         runtime = RepositoryToolRuntime(
             repo_root=".",

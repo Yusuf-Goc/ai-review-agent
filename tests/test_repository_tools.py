@@ -337,6 +337,133 @@ class RepositoryToolsTests(unittest.TestCase):
             },
         )
 
+
+    def test_bigquery_select_star_matches_column_contract_but_except_does_not(self):
+        (self.repo / "wildcard.sql").write_text(
+            "SELECT * FROM sales.customers;\n",
+            encoding="utf-8",
+        )
+        (self.repo / "wildcard_except.sql").write_text(
+            "SELECT * EXCEPT(country) FROM sales.customers;\n",
+            encoding="utf-8",
+        )
+        (self.repo / "wildcard_replace.sql").write_text(
+            "SELECT * REPLACE(UPPER(country) AS country) "
+            "FROM sales.customers;\n",
+            encoding="utf-8",
+        )
+        self._git("add", ".")
+        self._git("commit", "-m", "add wildcard consumers")
+        revision = self._git("rev-parse", "HEAD").stdout.strip()
+
+        result = find_bigquery_references(
+            self.repo,
+            revision,
+            "sales.customers.country",
+            symbol_type="column",
+        )
+        by_path = {item["path"]: item for item in result["references"]}
+
+        self.assertEqual(
+            "column_contract",
+            by_path["wildcard.sql"]["reference_type"],
+        )
+        self.assertNotIn("wildcard_except.sql", by_path)
+        self.assertEqual("column", by_path["wildcard_replace.sql"]["reference_type"])
+
+    def test_bigquery_wildcard_does_not_match_nested_struct_field(self):
+        candidate = {
+            "project": None,
+            "dataset": "sales",
+            "object": "customers",
+            "resolved_column": "*",
+            "reference_type": "column_contract",
+            "excluded_columns": [],
+            "replaced_columns": [],
+            "confidence": "confirmed",
+        }
+        self.assertIsNone(
+            _bigquery_reference_match(
+                symbol="sales.customers.address.country",
+                symbol_type="column",
+                candidate=candidate,
+            )
+        )
+
+    def test_bigquery_transitive_view_dependency_chain_is_returned(self):
+        files = {
+            "customer_view.sql": (
+                "CREATE VIEW sales.customer_view AS "
+                "SELECT * FROM sales.customers;\n"
+            ),
+            "customer_summary.sql": (
+                "CREATE VIEW analytics.customer_summary AS "
+                "SELECT * FROM sales.customer_view;\n"
+            ),
+            "customer_dashboard.sql": (
+                "SELECT * FROM analytics.customer_summary;\n"
+            ),
+        }
+        for name, content in files.items():
+            (self.repo / name).write_text(content, encoding="utf-8")
+        self._git("add", ".")
+        self._git("commit", "-m", "add view dependency chain")
+        revision = self._git("rev-parse", "HEAD").stdout.strip()
+
+        result = find_bigquery_references(
+            self.repo,
+            revision,
+            "sales.customers.country",
+            symbol_type="column",
+        )
+        by_path = {item["path"]: item for item in result["references"]}
+
+        self.assertEqual("direct", by_path["customer_view.sql"]["dependency_kind"])
+        self.assertEqual(
+            [
+                "sales.customers.country",
+                "sales.customer_view",
+                "analytics.customer_summary",
+            ],
+            by_path["customer_summary.sql"]["dependency_path"],
+        )
+        self.assertEqual(1, by_path["customer_summary.sql"]["dependency_depth"])
+        self.assertEqual(2, by_path["customer_dashboard.sql"]["dependency_depth"])
+        self.assertEqual("transitive", by_path["customer_dashboard.sql"]["dependency_kind"])
+        self.assertGreaterEqual(result["transitive_reference_count"], 2)
+
+    def test_bigquery_transitive_routine_dependency_chain_is_returned(self):
+        (self.repo / "country_label_view.sql").write_text(
+            "CREATE VIEW sales.country_label_view AS "
+            "SELECT sales.calculate_country('TR') AS label;\n",
+            encoding="utf-8",
+        )
+        (self.repo / "country_label_dashboard.sql").write_text(
+            "SELECT * FROM sales.country_label_view;\n",
+            encoding="utf-8",
+        )
+        self._git("add", ".")
+        self._git("commit", "-m", "add routine dependency chain")
+        revision = self._git("rev-parse", "HEAD").stdout.strip()
+
+        result = find_bigquery_references(
+            self.repo,
+            revision,
+            "sales.calculate_country",
+            symbol_type="function",
+        )
+        by_path = {item["path"]: item for item in result["references"]}
+
+        self.assertEqual("direct", by_path["country_label_view.sql"]["dependency_kind"])
+        self.assertEqual(
+            "transitive",
+            by_path["country_label_dashboard.sql"]["dependency_kind"],
+        )
+        self.assertEqual(
+            "sales.country_label_view",
+            by_path["country_label_dashboard.sql"]["via_object"],
+        )
+
     def test_search_project_docs_uses_markdown_only(self):
         result = search_project_docs(
             self.repo,

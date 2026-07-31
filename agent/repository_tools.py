@@ -346,6 +346,59 @@ def _bigquery_reference_match(
     target_parts = _bigquery_identifier_parts(symbol)
     normalized_type = str(symbol_type or "unknown").casefold()
 
+    if normalized_type == "column" and (
+        candidate.get("reference_type") == "column_contract"
+        or candidate.get("resolved_column") == "*"
+    ):
+        candidate_object_parts = [
+            str(part).casefold()
+            for part in (
+                candidate.get("project"),
+                candidate.get("dataset"),
+                candidate.get("object"),
+            )
+            if isinstance(part, str) and part
+        ]
+        target_object_parts: list[str] = []
+        target_column_parts = list(target_parts)
+        for length in (3, 2, 1):
+            if len(target_parts) <= length:
+                continue
+            object_candidate = target_parts[:length]
+            if _bigquery_object_match(object_candidate, candidate) is not None:
+                target_object_parts = object_candidate
+                target_column_parts = target_parts[length:]
+                break
+
+        # SELECT * tablo seviyesindeki kolon sozlesmesini tasir. Nested STRUCT
+        # alanlari bagimsiz top-level kolon olarak genisletilmez.
+        if len(target_column_parts) != 1:
+            return None
+        target_column = target_column_parts[0].casefold()
+        excluded_columns = {
+            str(value).casefold()
+            for value in candidate.get("excluded_columns", [])
+            if isinstance(value, str)
+        }
+        replaced_columns = {
+            str(value).casefold()
+            for value in candidate.get("replaced_columns", [])
+            if isinstance(value, str)
+        }
+        if target_column in excluded_columns or target_column in replaced_columns:
+            return None
+
+        if not target_object_parts:
+            if not candidate_object_parts:
+                return None
+            return "possible"
+        object_match = _bigquery_object_match(target_object_parts, candidate)
+        if object_match is None:
+            return None
+        if candidate.get("confidence") != "confirmed":
+            return "possible"
+        return object_match
+
     if normalized_type == "column":
         candidate_column = candidate.get("resolved_column")
         if not isinstance(candidate_column, str) or not candidate_column:
@@ -440,8 +493,178 @@ def _bigquery_reference_item(
         ),
         "resolved_column": candidate.get("resolved_column"),
         "clause": candidate.get("clause"),
+        "statement": candidate.get("statement"),
+        "scope": candidate.get("scope"),
+        "source_type": candidate.get("source_type"),
+        "routine_kind": candidate.get("routine_kind"),
+        "excluded_columns": list(candidate.get("excluded_columns", [])),
+        "replaced_columns": list(candidate.get("replaced_columns", [])),
         "reason": candidate.get("reason", ""),
     }
+
+
+def _bigquery_owner_definitions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    owners = []
+    for definition in analysis.get("definitions", []):
+        if not isinstance(definition, dict):
+            continue
+        if str(definition.get("action", "create")).casefold() != "create":
+            continue
+        if str(definition.get("object_type", "")).casefold() not in {
+            "view", "function", "table_function", "procedure",
+        }:
+            continue
+        qualified_name = definition.get("qualified_name")
+        if not isinstance(qualified_name, str) or not qualified_name:
+            continue
+        owners.append(definition)
+    return owners
+
+
+def _bigquery_candidate_owner(
+    file_item: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any] | None:
+    statement = candidate.get("statement")
+    owners = [
+        owner
+        for owner in file_item.get("owners", [])
+        if owner.get("statement") == statement
+    ]
+    return owners[0] if len(owners) == 1 else None
+
+
+def _bigquery_owner_consumers(
+    repository_index: dict[str, Any],
+    owner: dict[str, Any],
+) -> list[tuple[dict[str, Any], dict[str, Any], str]]:
+    owner_name = owner.get("qualified_name")
+    owner_type = str(owner.get("object_type", "")).casefold()
+    if not isinstance(owner_name, str) or not owner_name:
+        return []
+
+    results: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    for file_item in repository_index.get("files", []):
+        analysis = file_item.get("analysis", {})
+        if owner_type in {"function", "table_function", "procedure"}:
+            candidates = analysis.get("routine_references", [])
+            symbol_type = "function"
+        else:
+            candidates = [
+                candidate
+                for candidate in analysis.get("sources", [])
+                if isinstance(candidate, dict)
+                and candidate.get("source_type") == "table"
+            ]
+            symbol_type = "table"
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("confidence") == "ignored":
+                continue
+            confidence = _bigquery_reference_match(
+                symbol=owner_name,
+                symbol_type=symbol_type,
+                candidate=candidate,
+            )
+            if confidence is not None:
+                results.append((file_item, candidate, confidence))
+    return results
+
+
+def _bigquery_transitive_references(
+    repository_index: dict[str, Any],
+    *,
+    target_symbol: str,
+    direct_confirmed: list[dict[str, Any]],
+    direct_possible: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Dogrudan etkilenen view/routine sahiplerinden downstream zinciri izler."""
+    file_lookup = {item.get("path"): item for item in repository_index.get("files", [])}
+    queue: list[tuple[dict[str, Any], str, int, list[str]]] = []
+    best_owner_confidence: dict[tuple[str, str], str] = {}
+
+    def enqueue_from_reference(item: dict[str, Any], confidence: str) -> None:
+        file_item = file_lookup.get(item.get("path"))
+        if not isinstance(file_item, dict):
+            return
+        owner = _bigquery_candidate_owner(file_item, item)
+        if owner is None:
+            return
+        owner_name = str(owner.get("qualified_name", ""))
+        owner_type = str(owner.get("object_type", ""))
+        key = (owner_type.casefold(), owner_name.casefold())
+        previous = best_owner_confidence.get(key)
+        if previous == "confirmed" or previous == confidence:
+            return
+        best_owner_confidence[key] = confidence
+        queue.append((owner, confidence, 0, [target_symbol, owner_name]))
+
+    for item in direct_confirmed:
+        enqueue_from_reference(item, "confirmed")
+    for item in direct_possible:
+        enqueue_from_reference(item, "possible")
+
+    confirmed: list[dict[str, Any]] = []
+    possible: list[dict[str, Any]] = []
+    processed: set[tuple[str, str, str]] = set()
+
+    while queue:
+        owner, path_confidence, depth, dependency_path = queue.pop(0)
+        owner_name = str(owner.get("qualified_name", ""))
+        owner_type = str(owner.get("object_type", "")).casefold()
+        process_key = (owner_type, owner_name.casefold(), path_confidence)
+        if process_key in processed:
+            continue
+        processed.add(process_key)
+
+        for file_item, candidate, edge_confidence in _bigquery_owner_consumers(
+            repository_index, owner
+        ):
+            confidence = (
+                "confirmed"
+                if path_confidence == "confirmed" and edge_confidence == "confirmed"
+                else "possible"
+            )
+            consumer_owner = _bigquery_candidate_owner(file_item, candidate)
+            endpoint = (
+                str(consumer_owner.get("qualified_name"))
+                if consumer_owner is not None
+                else str(file_item.get("path", ""))
+            )
+            next_path = [*dependency_path, endpoint]
+            item = _bigquery_reference_item(
+                path=str(file_item.get("path", "")),
+                file_lines=list(file_item.get("lines", [])),
+                candidate=candidate,
+                confidence=confidence,
+                reference_type="transitive",
+            )
+            item.update({
+                "dependency_kind": "transitive",
+                "dependency_depth": depth + 1,
+                "dependency_path": next_path,
+                "via_object": owner_name,
+                "reason": (
+                    f"{owner_name} nesnesi uzerinden dolayli BigQuery bagimliligi bulundu."
+                ),
+            })
+            (confirmed if confidence == "confirmed" else possible).append(item)
+
+            if consumer_owner is None:
+                continue
+            next_owner_name = str(consumer_owner.get("qualified_name", ""))
+            next_key = (
+                str(consumer_owner.get("object_type", "")).casefold(),
+                next_owner_name.casefold(),
+            )
+            previous = best_owner_confidence.get(next_key)
+            if previous == "confirmed" or previous == confidence:
+                continue
+            best_owner_confidence[next_key] = confidence
+            queue.append((consumer_owner, confidence, depth + 1, next_path))
+
+    return confirmed, possible
 
 
 @lru_cache(maxsize=8)
@@ -473,6 +696,7 @@ def _build_bigquery_repository_index(
             "path": path,
             "lines": source_text.splitlines(),
             "analysis": analysis,
+            "owners": _bigquery_owner_definitions(analysis),
         })
         for error in analysis.get("errors", []):
             parse_errors.append({"path": path, **error})
@@ -592,7 +816,10 @@ def find_bigquery_references(
 
         normalized_type = str(symbol_type or "unknown").casefold()
         if normalized_type == "column":
-            candidates = analysis.get("references", [])
+            candidates = [
+                *analysis.get("references", []),
+                *analysis.get("wildcard_references", []),
+            ]
             reference_type = "column"
         elif normalized_type == "function":
             candidates = analysis.get("routine_references", [])
@@ -627,12 +854,34 @@ def find_bigquery_references(
                 file_lines=file_lines,
                 candidate=candidate,
                 confidence=confidence,
-                reference_type=reference_type,
+                reference_type=(
+                    str(candidate.get("reference_type"))
+                    if candidate.get("reference_type")
+                    else reference_type
+                ),
             )
             if confidence == "confirmed":
                 confirmed.append(item)
             else:
                 possible.append(item)
+
+    for item in confirmed:
+        item.setdefault("dependency_kind", "direct")
+        item.setdefault("dependency_depth", 0)
+        item.setdefault("dependency_path", [safe_symbol])
+    for item in possible:
+        item.setdefault("dependency_kind", "direct")
+        item.setdefault("dependency_depth", 0)
+        item.setdefault("dependency_path", [safe_symbol])
+
+    transitive_confirmed, transitive_possible = _bigquery_transitive_references(
+        repository_index,
+        target_symbol=safe_symbol,
+        direct_confirmed=confirmed,
+        direct_possible=possible,
+    )
+    confirmed.extend(transitive_confirmed)
+    possible.extend(transitive_possible)
 
     def deduplicate(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         unique: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -644,7 +893,14 @@ def find_bigquery_references(
                 item.get("resolved_object"),
                 item.get("resolved_column"),
             )
-            unique.setdefault(key, item)
+            existing = unique.get(key)
+            if existing is None:
+                unique[key] = item
+            elif (
+                existing.get("dependency_kind") == "transitive"
+                and item.get("dependency_kind") == "direct"
+            ):
+                unique[key] = item
         return sorted(
             unique.values(),
             key=lambda item: (
@@ -673,6 +929,14 @@ def find_bigquery_references(
         "symbol_type": symbol_type,
         "references": confirmed,
         "possible_references": possible,
+        "direct_reference_count": sum(
+            1 for item in confirmed + possible
+            if item.get("dependency_kind") == "direct"
+        ),
+        "transitive_reference_count": sum(
+            1 for item in confirmed + possible
+            if item.get("dependency_kind") == "transitive"
+        ),
         "ignored_count": ignored_count,
         "scanned_file_count": repository_index["scanned_file_count"],
         "requested_file_count": repository_index["requested_file_count"],

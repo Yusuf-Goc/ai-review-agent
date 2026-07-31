@@ -885,6 +885,169 @@ def _using_column_references(
     return references, consumed
 
 
+
+def _parse_wildcard_modifiers(
+    tokens: list[_Token],
+    start: int,
+    *,
+    excluded: set[int],
+) -> tuple[set[str], set[str], set[int]]:
+    """SELECT wildcard arkasindaki EXCEPT/REPLACE hedeflerini cikarir."""
+    excluded_columns: set[str] = set()
+    replaced_columns: set[str] = set()
+    consumed: set[int] = set()
+    index = start
+
+    while index < len(tokens):
+        if index in excluded:
+            index += 1
+            continue
+        token = tokens[index]
+        if token.upper not in {"EXCEPT", "REPLACE"}:
+            break
+        if index + 1 >= len(tokens) or tokens[index + 1].value != "(":
+            break
+        close_index = _find_matching_paren(tokens, index + 1)
+        if close_index is None:
+            break
+
+        consumed.add(index)
+        if token.upper == "EXCEPT":
+            consumed.update(range(index + 1, close_index + 1))
+            for cursor in range(index + 2, close_index):
+                if _is_identifier(tokens[cursor]):
+                    excluded_columns.add(tokens[cursor].value.casefold())
+        else:
+            # REPLACE ifadelerindeki kaynak kolonlar normal kolon evidence'i
+            # olarak kalir. Yalnizca cikti aliaslarini kaydederiz.
+            consumed.update({index, index + 1, close_index})
+            depth = 0
+            for cursor in range(index + 2, close_index):
+                value = tokens[cursor].value
+                if value == "(":
+                    depth += 1
+                elif value == ")":
+                    depth = max(0, depth - 1)
+                elif (
+                    depth == 0
+                    and tokens[cursor].upper == "AS"
+                    and cursor + 1 < close_index
+                    and _is_identifier(tokens[cursor + 1])
+                ):
+                    replaced_columns.add(tokens[cursor + 1].value.casefold())
+                    consumed.update({cursor, cursor + 1})
+        index = close_index + 1
+
+    return excluded_columns, replaced_columns, consumed
+
+
+def _wildcard_reference_from_source(
+    *,
+    path: str,
+    token: _Token,
+    raw_reference: str,
+    source: dict[str, Any],
+    excluded_columns: set[str],
+    replaced_columns: set[str],
+) -> dict[str, Any]:
+    source_type = source.get("source_type")
+    if source_type == "cte":
+        confidence = "ignored"
+        reason = "Wildcard fiziksel tablo yerine sorgu ici CTE kaynagina aittir."
+    elif source_type in {"subquery", "unnest", "table_function"}:
+        confidence = "possible"
+        reason = "Wildcard kaynaginin cikti kolon lineage'i kesin cozulmemektedir."
+    else:
+        confidence = source.get("confidence", "possible")
+        reason = (
+            "SELECT wildcard bu BigQuery tablosunun kolon sozlesmesini ciktiya tasir."
+            if confidence == "confirmed"
+            else "Wildcard tablo kaynagina baglidir ancak default dataset bilinmemektedir."
+        )
+
+    return {
+        "path": path,
+        "line": token.line,
+        "raw_reference": raw_reference,
+        "reference_type": "column_contract",
+        "confidence": confidence,
+        "project": source.get("project"),
+        "dataset": source.get("dataset"),
+        "object": source.get("object"),
+        "resolved_object": source.get("qualified_name") or None,
+        "column_path": ["*"],
+        "resolved_column": "*",
+        "excluded_columns": sorted(excluded_columns),
+        "replaced_columns": sorted(replaced_columns),
+        "clause": "select",
+        "reason": reason,
+    }
+
+
+def _collect_wildcard_references(
+    tokens: list[_Token],
+    *,
+    path: str,
+    sources: list[dict[str, Any]],
+    excluded: set[int],
+) -> tuple[list[dict[str, Any]], set[int]]:
+    """SELECT *, alias.*, EXCEPT ve REPLACE cikti sozlesmesini toplar."""
+    references: list[dict[str, Any]] = []
+    consumed: set[int] = set()
+    aliases: dict[str, list[dict[str, Any]]] = {}
+    for source in sources:
+        alias = source.get("alias")
+        if isinstance(alias, str) and alias:
+            aliases.setdefault(alias.casefold(), []).append(source)
+
+    physical_sources = [
+        source for source in sources
+        if source.get("source_type") in {"table", "cte", "subquery", "unnest", "table_function"}
+    ]
+
+    for index, token in enumerate(tokens):
+        if index in excluded or token.value != "*":
+            continue
+        if _clause_at(tokens, index, excluded=excluded) != "select":
+            continue
+
+        raw_reference = "*"
+        matched_sources = physical_sources
+        prefix_indexes: set[int] = set()
+        if (
+            index >= 2
+            and tokens[index - 1].value == "."
+            and _is_identifier(tokens[index - 2])
+        ):
+            alias = tokens[index - 2].value
+            raw_reference = f"{alias}.*"
+            matched_sources = aliases.get(alias.casefold(), [])
+            prefix_indexes.update({index - 2, index - 1})
+
+        excluded_columns, replaced_columns, modifier_consumed = (
+            _parse_wildcard_modifiers(
+                tokens,
+                index + 1,
+                excluded=excluded,
+            )
+        )
+        consumed.update(prefix_indexes | {index} | modifier_consumed)
+
+        for source in matched_sources:
+            references.append(
+                _wildcard_reference_from_source(
+                    path=path,
+                    token=token,
+                    raw_reference=raw_reference,
+                    source=source,
+                    excluded_columns=excluded_columns,
+                    replaced_columns=replaced_columns,
+                )
+            )
+
+    return references, consumed
+
+
 def _collect_references(
     tokens: list[_Token],
     *,
@@ -1301,6 +1464,12 @@ def _analyze_scope(
     base_reference_consumed = (
         set(base_consumed or set()) | cte_consumed | source_consumed
     )
+    wildcard_references, wildcard_consumed = _collect_wildcard_references(
+        tokens,
+        path=path,
+        sources=sources,
+        excluded=excluded,
+    )
     routine_references, routine_consumed = _collect_routine_references(
         tokens,
         path=path,
@@ -1313,13 +1482,13 @@ def _analyze_scope(
         path=path,
         sources=sources,
         cte_names=local_cte_names,
-        consumed=base_reference_consumed | routine_consumed,
+        consumed=base_reference_consumed | wildcard_consumed | routine_consumed,
         parameters=parameters,
         excluded=excluded,
         inherited_sources=inherited_sources,
     )
 
-    for collection in (ctes, sources, references, routine_references):
+    for collection in (ctes, sources, references, wildcard_references, routine_references):
         for item in collection:
             item["scope"] = scope
 
@@ -1327,6 +1496,7 @@ def _analyze_scope(
         "ctes": list(ctes),
         "sources": list(sources),
         "references": list(references),
+        "wildcard_references": list(wildcard_references),
         "routine_references": list(routine_references),
     }
     visible_sources = list(sources) + list(inherited_sources or [])
@@ -1369,6 +1539,7 @@ def analyze_bigquery_sql(
     all_mutations: list[dict[str, Any]] = []
     all_sources: list[dict[str, Any]] = []
     all_references: list[dict[str, Any]] = []
+    all_wildcard_references: list[dict[str, Any]] = []
     all_routine_references: list[dict[str, Any]] = []
     all_ctes: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -1393,6 +1564,7 @@ def analyze_bigquery_sql(
                 scoped["ctes"],
                 scoped["sources"],
                 scoped["references"],
+                scoped["wildcard_references"],
                 scoped["routine_references"],
             ):
                 for item in collection:
@@ -1403,6 +1575,7 @@ def analyze_bigquery_sql(
             all_ctes.extend(scoped["ctes"])
             all_sources.extend(scoped["sources"])
             all_references.extend(scoped["references"])
+            all_wildcard_references.extend(scoped["wildcard_references"])
             all_routine_references.extend(scoped["routine_references"])
         except (IndexError, TypeError, ValueError) as exc:
             errors.append({
@@ -1417,6 +1590,7 @@ def analyze_bigquery_sql(
         "mutations": all_mutations,
         "sources": all_sources,
         "references": all_references,
+        "wildcard_references": all_wildcard_references,
         "routine_references": all_routine_references,
         "ctes": all_ctes,
         "errors": errors,

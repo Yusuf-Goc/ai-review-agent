@@ -300,5 +300,55 @@ class BigQueryEvidenceTests(unittest.TestCase):
         self.assertEqual([], result["routine_references"])
 
 
+    def test_collects_select_star_column_contract(self):
+        result = analyze_bigquery_sql(
+            "SELECT * FROM sales.customers;",
+            path="wildcard.sql",
+        )
+        self.assertEqual(1, len(result["wildcard_references"]))
+        reference = result["wildcard_references"][0]
+        self.assertEqual("column_contract", reference["reference_type"])
+        self.assertEqual("sales.customers", reference["resolved_object"])
+        self.assertEqual("confirmed", reference["confidence"])
+
+    def test_collects_alias_star_for_matching_source_only(self):
+        result = analyze_bigquery_sql(
+            "SELECT c.* FROM sales.customers c "
+            "JOIN procurement.suppliers s ON s.id = c.id;",
+            path="alias_wildcard.sql",
+        )
+        self.assertEqual(
+            ["sales.customers"],
+            [item["resolved_object"] for item in result["wildcard_references"]],
+        )
+
+    def test_select_star_except_records_excluded_column_without_false_reference(self):
+        result = analyze_bigquery_sql(
+            "SELECT * EXCEPT(country) FROM sales.customers;",
+            path="except.sql",
+        )
+        wildcard = result["wildcard_references"][0]
+        self.assertEqual(["country"], wildcard["excluded_columns"])
+        self.assertFalse(
+            any(item["resolved_column"] == "country" for item in result["references"])
+        )
+
+    def test_select_star_replace_keeps_expression_reference_and_replacement_target(self):
+        result = analyze_bigquery_sql(
+            "SELECT * REPLACE(UPPER(country) AS country) "
+            "FROM sales.customers;",
+            path="replace.sql",
+        )
+        wildcard = result["wildcard_references"][0]
+        self.assertEqual(["country"], wildcard["replaced_columns"])
+        self.assertTrue(
+            any(
+                item["resolved_column"] == "country"
+                and item["reference_type"] == "column"
+                for item in result["references"]
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

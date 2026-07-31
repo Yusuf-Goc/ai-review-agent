@@ -385,6 +385,12 @@ class RepositoryToolRuntime:
                             ]
                         if use_bigquery_semantic:
                             item["evidence_mode"] = "bigquery_semantic"
+                            item[f"direct_reference_count_{revision_alias}"] = int(
+                                bounded.get("direct_reference_count", 0) or 0
+                            )
+                            item[f"transitive_reference_count_{revision_alias}"] = int(
+                                bounded.get("transitive_reference_count", 0) or 0
+                            )
                         item[f"{revision_alias}_truncated"] = bool(
                             bounded.get("truncated")
                         )
@@ -530,23 +536,29 @@ Kurallar:
    kesin BigQuery kanitidir ve ilgili impact kaydina eklenmelidir.
 3. possible_references_base/head yalnizca BigQuery aday kanitidir; ilgili dosyayi
    okuyup dogrulamadan kesin dis kullanim veya breaking change kaniti sayma.
-4. Bu kanittaki kesin dis dosya kullanimlarini ilgili impact kaydina ekle ve
+4. BigQuery reference kaydinda dependency_kind `transitive` ise dosya degisen
+   nesneyi dependency_path zinciri uzerinden dolayli tuketir. Bunu dogrudan
+   kullanim gibi anlatma; ancak zincir kesin evidence ise capraz dosya etkiye ekle.
+5. reference_type `column_contract` olan SELECT * veya alias.* kaydi kolonun
+   cikti semasina tasindigini gosterir. EXCEPT/REPLACE ile hedef kolon dislandiysa
+   repository araci bu kaydi zaten elemis olur.
+6. Bu kanittaki kesin dis dosya kullanimlarini ilgili impact kaydina ekle ve
    uyumlulugunu degerlendir.
-5. Degisen her anlamli sembol icin tanim ve kullanim noktalarini base ve head
+7. Degisen her anlamli sembol icin tanim ve kullanim noktalarini base ve head
    revisionlarda kontrol et.
-6. Fonksiyon veya degiskenin baska dosyalardaki kullanimlarini kanit olmadan uydurma.
-7. Gerekirse compare_symbol, find_symbol_references, read_file_section ve
+8. Fonksiyon veya degiskenin baska dosyalardaki kullanimlarini kanit olmadan uydurma.
+9. Gerekirse compare_symbol, find_symbol_references, read_file_section ve
    search_project_docs kullan.
-8. README ve Markdown destekleyici baglamdir; kaynak kod teknik gercekliktir.
-9. Yalnizca PR degisikliginin capraz dosya etkisini acikla.
-10. Hunk basligindan gelen ancak acik bir bildirim degisikligi olmayan ve base/head
+10. README ve Markdown destekleyici baglamdir; kaynak kod teknik gercekliktir.
+11. Yalnizca PR degisikliginin capraz dosya etkisini acikla.
+12. Hunk basligindan gelen ancak acik bir bildirim degisikligi olmayan ve base/head
     davranisi ayni kalan sembolleri impact_analysis listesine ekleme.
-11. Fonksiyon veya method imzasi icin degisen dosya disinda referans kaniti varsa
+13. Fonksiyon veya method imzasi icin degisen dosya disinda referans kaniti varsa
     critical breaking_change uygundur. Dis repository referansi yoksa bunu en fazla
     high API uyumluluk riski olarak degerlendir; yalnizca olasi harici tuketici
     varsayimiyla critical deme.
-12. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
-13. Tum aciklama metinleri Turkce olsun.
+14. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
+15. Tum aciklama metinleri Turkce olsun.
 
 Beklenen JSON semasi:
 {{
