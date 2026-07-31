@@ -350,15 +350,47 @@ def _bigquery_reference_match(
         candidate_column = candidate.get("resolved_column")
         if not isinstance(candidate_column, str) or not candidate_column:
             return None
-        column_parts = [part.casefold() for part in candidate_column.split(".") if part]
+        column_parts = [
+            part.casefold()
+            for part in candidate_column.split(".")
+            if part
+        ]
         if not column_parts:
             return None
 
-        target_column = target_parts[-1] if target_parts else ""
-        if column_parts[-1] != target_column:
+        candidate_object_parts = [
+            str(part).casefold()
+            for part in (
+                candidate.get("project"),
+                candidate.get("dataset"),
+                candidate.get("object"),
+            )
+            if isinstance(part, str) and part
+        ]
+
+        target_object_parts: list[str] = []
+        target_column_parts = list(target_parts)
+        for length in (3, 2, 1):
+            if len(target_parts) <= length:
+                continue
+            object_candidate = target_parts[:length]
+            if _bigquery_object_match(object_candidate, candidate) is not None:
+                target_object_parts = object_candidate
+                target_column_parts = target_parts[length:]
+                break
+
+        if not target_object_parts:
+            if len(candidate_object_parts) >= 2 and len(target_parts) > len(column_parts):
+                possible_object = target_parts[:-len(column_parts)]
+                if _bigquery_object_match(possible_object, candidate) is not None:
+                    target_object_parts = possible_object
+                    target_column_parts = target_parts[len(possible_object):]
+            elif len(target_parts) == len(column_parts):
+                target_column_parts = target_parts
+
+        if [part.casefold() for part in target_column_parts] != column_parts:
             return None
 
-        target_object_parts = target_parts[:-1]
         if not target_object_parts:
             return "possible"
 

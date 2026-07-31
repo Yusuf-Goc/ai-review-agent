@@ -38,6 +38,14 @@ _CLAUSE_KEYWORDS = {
     "SELECT", "FROM", "JOIN", "ON", "WHERE", "GROUP", "ORDER", "HAVING",
     "QUALIFY", "UPDATE", "SET", "INSERT", "MERGE", "USING", "DELETE",
 }
+_TYPE_WORDS = {
+    "ARRAY", "BIGNUMERIC", "BOOL", "BYTES", "DATE", "DATETIME",
+    "FLOAT64", "GEOGRAPHY", "INT64", "INTERVAL", "JSON", "NUMERIC",
+    "RANGE", "STRING", "STRUCT", "TIME", "TIMESTAMP",
+}
+_UNQUALIFIED_COLUMN_CLAUSES = {
+    "select", "on", "where", "group", "order", "having", "qualify", "set",
+}
 
 
 def _tokenize(sql_text: str) -> list[_Token]:
@@ -240,65 +248,91 @@ def _find_matching_paren(tokens: list[_Token], open_index: int) -> int | None:
     return None
 
 
-def _collect_ctes(tokens: list[_Token]) -> tuple[list[dict[str, Any]], set[int]]:
+def _query_like(tokens: list[_Token]) -> bool:
+    return any(token.upper in {"SELECT", "WITH"} for token in tokens[:12])
+
+
+def _collect_ctes(
+    tokens: list[_Token],
+    inherited_cte_names: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], set[int], list[dict[str, Any]]]:
     ctes: list[dict[str, Any]] = []
     consumed: set[int] = set()
+    nested_scopes: list[dict[str, Any]] = []
+    inherited = set(inherited_cte_names or set())
 
-    for with_index, token in enumerate(tokens):
-        if token.upper != "WITH":
-            continue
+    depth = 0
+    with_index = None
+    for index, token in enumerate(tokens):
+        if token.value == "(":
+            depth += 1
+        elif token.value == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and token.upper == "WITH":
+            with_index = index
+            break
 
-        index = with_index + 1
-        if index < len(tokens) and tokens[index].upper == "RECURSIVE":
-            consumed.add(index)
-            index += 1
+    if with_index is None:
+        return ctes, consumed, nested_scopes
 
-        while index < len(tokens):
-            if not _is_identifier(tokens[index]):
-                break
+    index = with_index + 1
+    consumed.add(with_index)
+    if index < len(tokens) and tokens[index].upper == "RECURSIVE":
+        consumed.add(index)
+        index += 1
 
-            name = tokens[index].value
-            name_line = tokens[index].line
-            consumed.add(index)
-            index += 1
+    visible_names = set(inherited)
+    while index < len(tokens):
+        if not _is_identifier(tokens[index]):
+            break
 
-            if index < len(tokens) and tokens[index].value == "(":
-                close_index = _find_matching_paren(tokens, index)
-                if close_index is None:
-                    break
-                consumed.update(range(index, close_index + 1))
-                index = close_index + 1
+        name = tokens[index].value
+        name_line = tokens[index].line
+        consumed.add(index)
+        index += 1
 
-            if index >= len(tokens) or tokens[index].upper != "AS":
-                break
-            consumed.add(index)
-            index += 1
-
-            if index >= len(tokens) or tokens[index].value != "(":
-                break
+        if index < len(tokens) and tokens[index].value == "(":
             close_index = _find_matching_paren(tokens, index)
             if close_index is None:
                 break
-
-            ctes.append({
-                "name": name,
-                "line": name_line,
-                "confidence": "ignored",
-                "reason": "CTE sorgu ici bir kaynaktir; fiziksel BigQuery tablosu degildir.",
-            })
-            consumed.update({with_index, index, close_index})
+            consumed.update(range(index, close_index + 1))
             index = close_index + 1
 
-            if index < len(tokens) and tokens[index].value == ",":
-                consumed.add(index)
-                index += 1
-                continue
+        if index >= len(tokens) or tokens[index].upper != "AS":
+            break
+        consumed.add(index)
+        index += 1
+
+        if index >= len(tokens) or tokens[index].value != "(":
+            break
+        close_index = _find_matching_paren(tokens, index)
+        if close_index is None:
             break
 
-    unique: dict[str, dict[str, Any]] = {}
-    for item in ctes:
-        unique.setdefault(item["name"].casefold(), item)
-    return list(unique.values()), consumed
+        ctes.append({
+            "name": name,
+            "line": name_line,
+            "confidence": "ignored",
+            "reason": "CTE sorgu ici bir kaynaktir; fiziksel BigQuery tablosu degildir.",
+        })
+        nested_scopes.append({
+            "kind": "cte",
+            "name": name,
+            "start": index + 1,
+            "end": close_index,
+            "visible_cte_names": set(visible_names),
+        })
+        consumed.update({index, close_index})
+        visible_names.add(name.casefold())
+        index = close_index + 1
+
+        if index < len(tokens) and tokens[index].value == ",":
+            consumed.add(index)
+            index += 1
+            continue
+        break
+
+    return ctes, consumed, nested_scopes
 
 
 def _parse_alias(tokens: list[_Token], index: int) -> tuple[str | None, int, set[int]]:
@@ -324,8 +358,12 @@ def _parse_alias(tokens: list[_Token], index: int) -> tuple[str | None, int, set
 
 def _source_clause(tokens: list[_Token], index: int) -> tuple[str | None, int]:
     token = tokens[index]
-    if token.upper in {"FROM", "JOIN", "UPDATE", "USING"}:
+    if token.upper in {"FROM", "JOIN", "UPDATE"}:
         return token.upper.lower(), index + 1
+    if token.upper == "USING":
+        if index + 1 < len(tokens) and tokens[index + 1].value == "(":
+            return None, index
+        return "using", index + 1
     if token.upper == "INTO" and index > 0 and tokens[index - 1].upper in {"INSERT", "MERGE"}:
         return f"{tokens[index - 1].upper.lower()}_into", index + 1
     return None, index
@@ -334,12 +372,19 @@ def _source_clause(tokens: list[_Token], index: int) -> tuple[str | None, int]:
 def _collect_sources(
     tokens: list[_Token],
     cte_names: set[str],
-) -> tuple[list[dict[str, Any]], set[int]]:
+    *,
+    excluded: set[int] | None = None,
+) -> tuple[list[dict[str, Any]], set[int], list[dict[str, Any]]]:
     sources: list[dict[str, Any]] = []
     consumed: set[int] = set()
+    nested_scopes: list[dict[str, Any]] = []
+    excluded_indexes = set(excluded or set())
     index = 0
 
     while index < len(tokens):
+        if index in excluded_indexes:
+            index += 1
+            continue
         clause, source_index = _source_clause(tokens, index)
         if clause is None:
             index += 1
@@ -347,7 +392,7 @@ def _collect_sources(
 
         consumed.add(index)
         index = source_index
-        if index >= len(tokens):
+        if index >= len(tokens) or index in excluded_indexes:
             continue
 
         if tokens[index].upper == "UNNEST" and index + 1 < len(tokens) and tokens[index + 1].value == "(":
@@ -370,7 +415,7 @@ def _collect_sources(
                 "alias": alias,
                 "source_type": "unnest",
                 "confidence": "possible",
-                "reason": "UNNEST kaynaginin alan lineage'i ilk surumde kesin cozulmemektedir.",
+                "reason": "UNNEST kaynaginin alan lineage'i kesin cozulmemektedir.",
             })
             index = next_index
             continue
@@ -394,14 +439,46 @@ def _collect_sources(
                 "alias": alias,
                 "source_type": "subquery",
                 "confidence": "possible",
-                "reason": "Alt sorgu kolon lineage'i ilk surumde kesin cozulmemektedir.",
+                "reason": "Alt sorgu kolon lineage'i kesin cozulmemektedir.",
             })
+            if _query_like(tokens[index + 1:close_index]):
+                nested_scopes.append({
+                    "kind": "subquery",
+                    "name": alias or "subquery",
+                    "start": index + 1,
+                    "end": close_index,
+                })
             index = next_index
             continue
 
         parts, next_index, identifier_indexes = _identifier_parts(tokens, index)
         if not parts:
             index += 1
+            continue
+
+        # BigQuery table-valued function source: FROM dataset.function(...)
+        if next_index < len(tokens) and tokens[next_index].value == "(":
+            close_index = _find_matching_paren(tokens, next_index)
+            if close_index is None:
+                index += 1
+                continue
+            alias, final_index, alias_indexes = _parse_alias(tokens, close_index + 1)
+            consumed.update(identifier_indexes)
+            consumed.update(range(next_index, close_index + 1))
+            consumed.update(alias_indexes)
+            normalized = _normalize_object(parts)
+            confidence = "confirmed" if normalized["dataset"] else "possible"
+            sources.append({
+                "line": tokens[index].line,
+                "clause": clause,
+                "raw_name": ".".join(parts),
+                **normalized,
+                "alias": alias or normalized["object"],
+                "source_type": "table_function",
+                "confidence": confidence,
+                "reason": "BigQuery table function kaynagi.",
+            })
+            index = final_index
             continue
 
         alias, final_index, alias_indexes = _parse_alias(tokens, next_index)
@@ -413,7 +490,7 @@ def _collect_sources(
         if cte_match:
             source_type = "cte"
             confidence = "ignored"
-            reason = "Kaynak fiziksel tablo degil, ayni sorguda tanimlanan CTE'dir."
+            reason = "Kaynak fiziksel tablo degil, gorunur sorgu scope'undaki CTE'dir."
         else:
             source_type = "table"
             confidence = "confirmed" if normalized["dataset"] else "possible"
@@ -435,8 +512,7 @@ def _collect_sources(
         })
         index = final_index
 
-    return sources, consumed
-
+    return sources, consumed, nested_scopes
 
 def _parse_create_definition(
     tokens: list[_Token],
@@ -646,9 +722,17 @@ def _collect_definitions(
     return definitions, mutations, consumed, parameters
 
 
-def _clause_at(tokens: list[_Token], index: int) -> str:
+def _clause_at(
+    tokens: list[_Token],
+    index: int,
+    *,
+    excluded: set[int] | None = None,
+) -> str:
     clause = "unknown"
+    excluded_indexes = set(excluded or set())
     for cursor in range(index):
+        if cursor in excluded_indexes:
+            continue
         upper = tokens[cursor].upper
         if upper in _CLAUSE_KEYWORDS:
             clause = upper.lower()
@@ -663,21 +747,28 @@ def _reference_from_source(
     column_path: list[str],
     source: dict[str, Any],
     clause: str,
+    confidence_override: str | None = None,
+    reason_override: str | None = None,
 ) -> dict[str, Any]:
     source_type = source.get("source_type")
     if source_type == "cte":
         confidence = "ignored"
         reason = "Referans fiziksel tablo yerine sorgu ici CTE aliasina baglidir."
-    elif source_type in {"subquery", "unnest"}:
+    elif source_type in {"subquery", "unnest", "table_function"}:
         confidence = "possible"
-        reason = "Alt sorgu veya UNNEST kolon lineage'i ilk surumde kesin cozulmemektedir."
+        reason = "Alt sorgu, UNNEST veya table function kolon lineage'i kesin cozulmemektedir."
     else:
         confidence = source.get("confidence", "possible")
         reason = (
-            "Alias, dataset ile nitelendirilmis BigQuery tablo kaynagina baglidir."
+            "Alias veya tek kaynak, dataset ile nitelendirilmis BigQuery tablosuna baglidir."
             if confidence == "confirmed"
-            else "Alias bir tabloya baglidir ancak default dataset bilinmedigi icin tam nesne kimligi kesin degildir."
+            else "Kaynak tablo baglantisi var ancak tam nesne kimligi veya kolon sahipligi kesin degildir."
         )
+
+    if confidence_override is not None:
+        confidence = confidence_override
+    if reason_override is not None:
+        reason = reason_override
 
     return {
         "path": path,
@@ -696,6 +787,61 @@ def _reference_from_source(
     }
 
 
+def _output_aliases(
+    tokens: list[_Token],
+    excluded: set[int],
+) -> tuple[set[str], set[int]]:
+    aliases: set[str] = set()
+    indexes: set[int] = set()
+    for index, token in enumerate(tokens[:-1]):
+        if index in excluded or token.upper != "AS":
+            continue
+        candidate_index = index + 1
+        if candidate_index in excluded or not _is_identifier(tokens[candidate_index]):
+            continue
+        aliases.add(tokens[candidate_index].value.casefold())
+        indexes.add(candidate_index)
+    return aliases, indexes
+
+
+def _using_column_references(
+    tokens: list[_Token],
+    *,
+    path: str,
+    sources: list[dict[str, Any]],
+    excluded: set[int],
+) -> tuple[list[dict[str, Any]], set[int]]:
+    references: list[dict[str, Any]] = []
+    consumed: set[int] = set()
+    physical_sources = [item for item in sources if item.get("source_type") == "table"]
+    for index, token in enumerate(tokens):
+        if index in excluded or token.upper != "USING":
+            continue
+        if index + 1 >= len(tokens) or tokens[index + 1].value != "(":
+            continue
+        close_index = _find_matching_paren(tokens, index + 1)
+        if close_index is None:
+            continue
+        consumed.update(range(index, close_index + 1))
+        for cursor in range(index + 2, close_index):
+            if not _is_identifier(tokens[cursor]):
+                continue
+            column = tokens[cursor].value
+            for source in physical_sources:
+                references.append(
+                    _reference_from_source(
+                        path=path,
+                        token=tokens[cursor],
+                        raw_reference=column,
+                        column_path=[column],
+                        source=source,
+                        clause="using",
+                        reason_override="JOIN USING kolonu her iki fiziksel tablo kaynaginda da kullanilir.",
+                    )
+                )
+    return references, consumed
+
+
 def _collect_references(
     tokens: list[_Token],
     *,
@@ -704,145 +850,306 @@ def _collect_references(
     cte_names: set[str],
     consumed: set[int],
     parameters: set[str],
+    excluded: set[int] | None = None,
+    inherited_sources: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    aliases: dict[str, list[dict[str, Any]]] = {}
-    for source in sources:
+    excluded_indexes = set(excluded or set())
+    inherited = list(inherited_sources or [])
+    local_aliases: dict[str, list[dict[str, Any]]] = {}
+    inherited_aliases: dict[str, list[dict[str, Any]]] = {}
+    for source, target in [
+        *[(item, local_aliases) for item in sources],
+        *[(item, inherited_aliases) for item in inherited],
+    ]:
         alias = source.get("alias")
         if isinstance(alias, str) and alias:
-            aliases.setdefault(alias.casefold(), []).append(source)
+            target.setdefault(alias.casefold(), []).append(source)
 
-    physical_sources = [item for item in sources if item.get("source_type") == "table"]
-    references: list[dict[str, Any]] = []
+    local_physical = [item for item in sources if item.get("source_type") == "table"]
+    inherited_physical = [item for item in inherited if item.get("source_type") == "table"]
+    physical_sources = local_physical or inherited_physical
+    references, using_consumed = _using_column_references(
+        tokens,
+        path=path,
+        sources=sources,
+        excluded=excluded_indexes,
+    )
+    consumed = set(consumed) | using_consumed
+    output_alias_names, output_alias_indexes = _output_aliases(tokens, excluded_indexes)
+    consumed.update(output_alias_indexes)
+    source_alias_names = set(local_aliases) | set(inherited_aliases)
     index = 0
 
     while index < len(tokens):
-        if index in consumed or not _is_identifier(tokens[index]):
+        if index in excluded_indexes or index in consumed or not _is_identifier(tokens[index]):
             index += 1
             continue
 
         parts, next_index, indexes = _identifier_parts(tokens, index)
-        if len(parts) < 2:
-            index += 1
-            continue
-
-        if indexes & consumed:
+        if not parts or indexes & (consumed | excluded_indexes):
             index = max(index + 1, next_index)
             continue
 
         first_key = parts[0].casefold()
         raw_reference = ".".join(parts)
-        clause = _clause_at(tokens, index)
+        clause = _clause_at(tokens, index, excluded=excluded_indexes)
 
         if first_key in parameters:
             index = next_index
             continue
 
-        alias_sources = aliases.get(first_key, [])
-        if len(alias_sources) == 1:
+        if len(parts) >= 2:
+            alias_sources = local_aliases.get(first_key)
+            if alias_sources is None:
+                alias_sources = inherited_aliases.get(first_key, [])
+            if len(alias_sources) == 1:
+                references.append(
+                    _reference_from_source(
+                        path=path,
+                        token=tokens[index],
+                        raw_reference=raw_reference,
+                        column_path=parts[1:],
+                        source=alias_sources[0],
+                        clause=clause,
+                    )
+                )
+                index = next_index
+                continue
+            if len(alias_sources) > 1:
+                for source in alias_sources:
+                    references.append(
+                        _reference_from_source(
+                            path=path,
+                            token=tokens[index],
+                            raw_reference=raw_reference,
+                            column_path=parts[1:],
+                            source=source,
+                            clause=clause,
+                            confidence_override="possible",
+                            reason_override="Ayni alias birden fazla gorunur kaynaga baglandigi icin referans kesin cozulmedi.",
+                        )
+                    )
+                index = next_index
+                continue
+
+            if first_key in cte_names:
+                references.append({
+                    "path": path,
+                    "line": tokens[index].line,
+                    "raw_reference": raw_reference,
+                    "reference_type": "column",
+                    "confidence": "ignored",
+                    "project": None,
+                    "dataset": None,
+                    "object": None,
+                    "resolved_object": None,
+                    "column_path": parts[1:],
+                    "resolved_column": ".".join(parts[1:]),
+                    "clause": clause,
+                    "reason": "Referans gorunur sorgu scope'undaki CTE'ye aittir.",
+                })
+                index = next_index
+                continue
+
+            matched_source = None
+            matched_prefix_length = 0
+            folded_parts = [part.casefold() for part in parts]
+            for source in physical_sources:
+                source_parts = [
+                    part.casefold()
+                    for part in (
+                        source.get("project"),
+                        source.get("dataset"),
+                        source.get("object"),
+                    )
+                    if isinstance(part, str) and part
+                ]
+                candidate_prefixes = [source_parts]
+                if source.get("object"):
+                    candidate_prefixes.append([str(source["object"]).casefold()])
+                if source.get("dataset") and source.get("object"):
+                    candidate_prefixes.append([
+                        str(source["dataset"]).casefold(),
+                        str(source["object"]).casefold(),
+                    ])
+                for prefix in candidate_prefixes:
+                    if prefix and folded_parts[:len(prefix)] == prefix and len(parts) > len(prefix):
+                        if len(prefix) > matched_prefix_length:
+                            matched_source = source
+                            matched_prefix_length = len(prefix)
+
+            if matched_source is not None:
+                references.append(
+                    _reference_from_source(
+                        path=path,
+                        token=tokens[index],
+                        raw_reference=raw_reference,
+                        column_path=parts[matched_prefix_length:],
+                        source=matched_source,
+                        clause=clause,
+                    )
+                )
+            elif len(physical_sources) == 1:
+                references.append(
+                    _reference_from_source(
+                        path=path,
+                        token=tokens[index],
+                        raw_reference=raw_reference,
+                        column_path=parts,
+                        source=physical_sources[0],
+                        clause=clause,
+                        confidence_override="possible",
+                        reason_override="Nitelikli referans tek gorunur tabloya adaydir ancak alias baglantisi kesin degildir.",
+                    )
+                )
+            index = next_index
+            continue
+
+        # Unqualified column reference.
+        token = tokens[index]
+        previous = tokens[index - 1] if index > 0 else None
+        following = tokens[index + 1] if index + 1 < len(tokens) else None
+        if (
+            token.upper in _RESERVED_WORDS
+            or token.upper in _TYPE_WORDS
+            or first_key in cte_names
+            or first_key in source_alias_names
+            or (previous is not None and previous.value == ".")
+            or (following is not None and following.value in {".", "("})
+            or (previous is not None and previous.upper in {"AS", "TABLE", "VIEW", "FUNCTION", "PROCEDURE", "SCHEMA", "COLUMN", "TO", "ADD", "DROP", "RENAME", "ALTER", "CREATE"})
+            or clause not in _UNQUALIFIED_COLUMN_CLAUSES
+            or (clause in {"group", "order", "having", "qualify"} and first_key in output_alias_names)
+        ):
+            index += 1
+            continue
+
+        if len(physical_sources) == 1:
             references.append(
                 _reference_from_source(
                     path=path,
-                    token=tokens[index],
-                    raw_reference=raw_reference,
-                    column_path=parts[1:],
-                    source=alias_sources[0],
+                    token=token,
+                    raw_reference=token.value,
+                    column_path=[token.value],
+                    source=physical_sources[0],
                     clause=clause,
+                    reason_override="Nitelendirilmemis kolon, bu scope'taki tek fiziksel tablo kaynagina baglidir.",
                 )
             )
-            index = next_index
-            continue
-        if len(alias_sources) > 1:
-            references.append({
-                "path": path,
-                "line": tokens[index].line,
-                "raw_reference": raw_reference,
-                "reference_type": "column",
-                "confidence": "possible",
-                "project": None,
-                "dataset": None,
-                "object": None,
-                "resolved_object": None,
-                "column_path": parts[1:],
-                "resolved_column": ".".join(parts[1:]),
-                "clause": clause,
-                "reason": "Ayni alias birden fazla kaynaga baglandigi icin referans kesin cozulmedi.",
-            })
-            index = next_index
-            continue
-
-        if first_key in cte_names:
-            references.append({
-                "path": path,
-                "line": tokens[index].line,
-                "raw_reference": raw_reference,
-                "reference_type": "column",
-                "confidence": "ignored",
-                "project": None,
-                "dataset": None,
-                "object": None,
-                "resolved_object": None,
-                "column_path": parts[1:],
-                "resolved_column": ".".join(parts[1:]),
-                "clause": clause,
-                "reason": "Referans sorgu ici CTE'ye aittir; fiziksel tablo kaniti sayilmaz.",
-            })
-            index = next_index
-            continue
-
-        matched_source = None
-        matched_prefix_length = 0
-        folded_parts = [part.casefold() for part in parts]
-        for source in physical_sources:
-            source_parts = [
-                part.casefold()
-                for part in (
-                    source.get("project"),
-                    source.get("dataset"),
-                    source.get("object"),
+        elif len(physical_sources) > 1:
+            for source in physical_sources:
+                references.append(
+                    _reference_from_source(
+                        path=path,
+                        token=token,
+                        raw_reference=token.value,
+                        column_path=[token.value],
+                        source=source,
+                        clause=clause,
+                        confidence_override="possible",
+                        reason_override="Nitelendirilmemis kolon birden fazla gorunur tablo kaynagindan gelebilir.",
+                    )
                 )
-                if isinstance(part, str) and part
-            ]
-            candidate_prefixes = [source_parts]
-            if source.get("object"):
-                candidate_prefixes.append([str(source["object"]).casefold()])
-            if source.get("dataset") and source.get("object"):
-                candidate_prefixes.append([
-                    str(source["dataset"]).casefold(),
-                    str(source["object"]).casefold(),
-                ])
-            for prefix in candidate_prefixes:
-                if prefix and folded_parts[: len(prefix)] == prefix and len(parts) > len(prefix):
-                    if len(prefix) > matched_prefix_length:
-                        matched_source = source
-                        matched_prefix_length = len(prefix)
-
-        if matched_source is not None:
-            references.append(
-                _reference_from_source(
-                    path=path,
-                    token=tokens[index],
-                    raw_reference=raw_reference,
-                    column_path=parts[matched_prefix_length:],
-                    source=matched_source,
-                    clause=clause,
-                )
-            )
-        elif len(physical_sources) == 1:
-            references.append(
-                _reference_from_source(
-                    path=path,
-                    token=tokens[index],
-                    raw_reference=raw_reference,
-                    column_path=parts,
-                    source={**physical_sources[0], "confidence": "possible"},
-                    clause=clause,
-                )
-            )
-
-        index = next_index
+        index += 1
 
     return references
 
+
+def _find_scalar_query_scopes(
+    tokens: list[_Token],
+    excluded: set[int],
+) -> list[dict[str, Any]]:
+    scopes: list[dict[str, Any]] = []
+    index = 0
+    while index < len(tokens):
+        if index in excluded or tokens[index].value != "(":
+            index += 1
+            continue
+        close_index = _find_matching_paren(tokens, index)
+        if close_index is None:
+            index += 1
+            continue
+        if not any(cursor in excluded for cursor in range(index, close_index + 1)) and _query_like(tokens[index + 1:close_index]):
+            scopes.append({
+                "kind": "scalar_subquery",
+                "name": "scalar_subquery",
+                "start": index + 1,
+                "end": close_index,
+            })
+            index = close_index + 1
+            continue
+        index += 1
+    return scopes
+
+
+def _analyze_scope(
+    tokens: list[_Token],
+    *,
+    path: str,
+    scope: str,
+    parameters: set[str],
+    inherited_cte_names: set[str] | None = None,
+    inherited_sources: list[dict[str, Any]] | None = None,
+    base_consumed: set[int] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    inherited_ctes = set(inherited_cte_names or set())
+    ctes, cte_consumed, cte_scopes = _collect_ctes(tokens, inherited_ctes)
+    local_cte_names = inherited_ctes | {item["name"].casefold() for item in ctes}
+    excluded: set[int] = set()
+    for item in cte_scopes:
+        excluded.update(range(item["start"] - 1, item["end"] + 1))
+
+    sources, source_consumed, source_scopes = _collect_sources(
+        tokens,
+        local_cte_names,
+        excluded=excluded,
+    )
+    nested_scopes = cte_scopes + source_scopes
+    for item in source_scopes:
+        excluded.update(range(item["start"] - 1, item["end"] + 1))
+
+    scalar_scopes = _find_scalar_query_scopes(tokens, excluded)
+    nested_scopes.extend(scalar_scopes)
+    for item in scalar_scopes:
+        excluded.update(range(item["start"] - 1, item["end"] + 1))
+
+    references = _collect_references(
+        tokens,
+        path=path,
+        sources=sources,
+        cte_names=local_cte_names,
+        consumed=set(base_consumed or set()) | cte_consumed | source_consumed,
+        parameters=parameters,
+        excluded=excluded,
+        inherited_sources=inherited_sources,
+    )
+
+    for collection in (ctes, sources, references):
+        for item in collection:
+            item["scope"] = scope
+
+    result = {
+        "ctes": list(ctes),
+        "sources": list(sources),
+        "references": list(references),
+    }
+    visible_sources = list(sources) + list(inherited_sources or [])
+    for nested_index, nested in enumerate(nested_scopes, start=1):
+        child_tokens = tokens[nested["start"]:nested["end"]]
+        child_scope = f"{scope}/{nested['kind']}:{nested['name']}:{nested_index}"
+        child_inherited_sources = [] if nested["kind"] == "cte" else visible_sources
+        child_ctes = set(nested.get("visible_cte_names", local_cte_names)) | local_cte_names
+        child = _analyze_scope(
+            child_tokens,
+            path=path,
+            scope=child_scope,
+            parameters=parameters,
+            inherited_cte_names=child_ctes,
+            inherited_sources=child_inherited_sources,
+        )
+        for key in result:
+            result[key].extend(child[key])
+
+    return result
 
 def analyze_bigquery_sql(
     sql_text: str,
@@ -851,10 +1158,10 @@ def analyze_bigquery_sql(
 ) -> dict[str, Any]:
     """BigQuery GoogleSQL icin deterministik tanim ve referans kaniti cikarir.
 
-    Bu katman tam bir SQL parser degildir. Kesin cozumlenebilen alias/tablo
-    baglantilarini ``confirmed``, default dataset veya lineage gerektiren
-    durumlari ``possible``, CTE gibi fiziksel tablo olmayan eslesmeleri ise
-    ``ignored`` olarak isaretler.
+    Scope-aware analiz CTE ve alt sorgu aliaslarini birbirinden ayirir.
+    Kesin cozumlenebilen kaynaklar ``confirmed``, birden fazla olasi kaynak
+    veya default dataset gerektiren durumlar ``possible``, fiziksel tablo
+    olmayan CTE eslesmeleri ise ``ignored`` olarak isaretlenir.
     """
     if not isinstance(sql_text, str):
         raise TypeError("sql_text metin olmalidir.")
@@ -873,28 +1180,30 @@ def analyze_bigquery_sql(
 
     for statement_index, statement in enumerate(statements, start=1):
         try:
-            ctes, cte_consumed = _collect_ctes(statement)
-            cte_names = {item["name"].casefold() for item in ctes}
             definitions, mutations, definition_consumed, parameters = _collect_definitions(statement)
-            sources, source_consumed = _collect_sources(statement, cte_names)
-            references = _collect_references(
+            scoped = _analyze_scope(
                 statement,
                 path=path,
-                sources=sources,
-                cte_names=cte_names,
-                consumed=cte_consumed | definition_consumed | source_consumed,
+                scope=f"statement:{statement_index}",
                 parameters=parameters,
+                base_consumed=definition_consumed,
             )
 
-            for collection in (ctes, definitions, mutations, sources, references):
+            for collection in (
+                definitions,
+                mutations,
+                scoped["ctes"],
+                scoped["sources"],
+                scoped["references"],
+            ):
                 for item in collection:
                     item["statement"] = statement_index
 
-            all_ctes.extend(ctes)
             all_definitions.extend(definitions)
             all_mutations.extend(mutations)
-            all_sources.extend(sources)
-            all_references.extend(references)
+            all_ctes.extend(scoped["ctes"])
+            all_sources.extend(scoped["sources"])
+            all_references.extend(scoped["references"])
         except (IndexError, TypeError, ValueError) as exc:
             errors.append({
                 "statement": statement_index,

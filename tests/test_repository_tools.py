@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent.repository_tools import (
     RepositoryToolError,
+    _bigquery_reference_match,
     compare_symbol,
     find_bigquery_references,
     find_symbol_definitions,
@@ -210,6 +211,32 @@ class RepositoryToolsTests(unittest.TestCase):
         )
         self.assertFalse(
             any(item["path"] == "supplier_country.sql" for item in confirmed + possible)
+        )
+
+
+    def test_bigquery_nested_field_does_not_match_top_level_column(self):
+        candidate = {
+            "project": None,
+            "dataset": "sales",
+            "object": "customers",
+            "resolved_column": "address.country",
+            "confidence": "confirmed",
+        }
+
+        self.assertIsNone(
+            _bigquery_reference_match(
+                symbol="sales.customers.country",
+                symbol_type="column",
+                candidate=candidate,
+            )
+        )
+        self.assertEqual(
+            "confirmed",
+            _bigquery_reference_match(
+                symbol="sales.customers.address.country",
+                symbol_type="column",
+                candidate=candidate,
+            ),
         )
 
     def test_search_project_docs_uses_markdown_only(self):

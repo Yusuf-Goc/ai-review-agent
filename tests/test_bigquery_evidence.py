@@ -145,5 +145,97 @@ class BigQueryEvidenceTests(unittest.TestCase):
         self.assertEqual("possible", item_ref["confidence"])
 
 
+    def test_unqualified_column_resolves_to_single_qualified_source(self):
+        refs = self._references(
+            "SELECT country FROM sales.customers WHERE status = 'active';"
+        )
+        by_name = {r["raw_reference"]: r for r in refs}
+        self.assertEqual("confirmed", by_name["country"]["confidence"])
+        self.assertEqual("sales.customers", by_name["country"]["resolved_object"])
+        self.assertEqual("country", by_name["country"]["resolved_column"])
+        self.assertEqual("sales.customers", by_name["status"]["resolved_object"])
+
+    def test_unqualified_column_with_multiple_sources_is_possible_for_each(self):
+        refs = self._references(
+            """
+            SELECT country
+            FROM sales.customers c
+            JOIN procurement.suppliers s ON c.id = s.id;
+            """
+        )
+        country_refs = [r for r in refs if r["raw_reference"] == "country"]
+        self.assertEqual(
+            {"sales.customers", "procurement.suppliers"},
+            {r["resolved_object"] for r in country_refs},
+        )
+        self.assertTrue(all(r["confidence"] == "possible" for r in country_refs))
+
+    def test_join_using_column_references_both_tables(self):
+        refs = self._references(
+            """
+            SELECT c.id
+            FROM sales.customers c
+            JOIN procurement.suppliers s USING (country);
+            """
+        )
+        using_refs = [r for r in refs if r["clause"] == "using"]
+        self.assertEqual(
+            {"sales.customers", "procurement.suppliers"},
+            {r["resolved_object"] for r in using_refs},
+        )
+        self.assertTrue(all(r["resolved_column"] == "country" for r in using_refs))
+
+    def test_nested_field_path_is_preserved(self):
+        refs = self._references(
+            "SELECT c.address.country FROM sales.customers c;"
+        )
+        ref = next(r for r in refs if r["raw_reference"] == "c.address.country")
+        self.assertEqual(["address", "country"], ref["column_path"])
+        self.assertEqual("address.country", ref["resolved_column"])
+
+    def test_nested_subquery_alias_shadowing_uses_local_scope(self):
+        refs = self._references(
+            """
+            SELECT c.country
+            FROM sales.customers c
+            WHERE EXISTS (
+              SELECT 1
+              FROM procurement.suppliers c
+              WHERE c.country = 'TR'
+            );
+            """
+        )
+        country_refs = [r for r in refs if r["raw_reference"] == "c.country"]
+        self.assertEqual(
+            {"sales.customers", "procurement.suppliers"},
+            {r["resolved_object"] for r in country_refs},
+        )
+        self.assertEqual(2, len({r["scope"] for r in country_refs}))
+
+    def test_cte_body_and_outer_query_keep_separate_scopes(self):
+        result = analyze_bigquery_sql(
+            """
+            WITH current_country AS (
+              SELECT c.country
+              FROM sales.customers c
+            )
+            SELECT c.country
+            FROM procurement.suppliers c
+            JOIN current_country cc ON cc.country = c.country;
+            """,
+            path="query.sql",
+        )
+        country_refs = [
+            r for r in result["references"]
+            if r["raw_reference"] == "c.country"
+        ]
+        self.assertEqual(
+            {"sales.customers", "procurement.suppliers"},
+            {r["resolved_object"] for r in country_refs},
+        )
+        cte_ref = next(r for r in result["references"] if r["raw_reference"] == "cc.country")
+        self.assertEqual("ignored", cte_ref["confidence"])
+
+
 if __name__ == "__main__":
     unittest.main()
