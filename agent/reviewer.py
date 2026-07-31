@@ -21,8 +21,45 @@ from agent.llm_client import (
     normalize_json_response,
 )
 from agent.payload_builder import attach_static_findings, build_code_payload
+from agent.repository_tools import (
+    RepositoryToolError,
+    get_bigquery_file_definitions,
+)
 from agent.review_batcher import filter_reviewable_files, make_review_batches
 from agent.symbol_analysis import extract_changed_symbols
+
+
+def _load_bigquery_owner_hints(
+    *,
+    repo_root,
+    base_sha,
+    head_sha,
+    files,
+):
+    if not repo_root or not base_sha or not head_sha:
+        return {}
+
+    hints = {}
+    for file_payload in files:
+        path = file_payload.get("path", "")
+        if PurePosixPath(path).suffix.lower() != ".sql":
+            continue
+        try:
+            hints[path] = {
+                "base": get_bigquery_file_definitions(
+                    repo_root,
+                    base_sha,
+                    path,
+                ),
+                "head": get_bigquery_file_definitions(
+                    repo_root,
+                    head_sha,
+                    path,
+                ),
+            }
+        except (RepositoryToolError, TypeError, ValueError):
+            continue
+    return hints
 
 
 def _failed_review(summary, findings=None, changes=None):
@@ -701,7 +738,16 @@ def analyze_diff_in_batches(
     }
     base_payload["project_context"] = project_context
 
-    changed_symbols = extract_changed_symbols(base_payload)
+    sql_owner_hints = _load_bigquery_owner_hints(
+        repo_root=repo_root,
+        base_sha=base_sha,
+        head_sha=head_sha,
+        files=base_payload.get("files", []),
+    )
+    changed_symbols = extract_changed_symbols(
+        base_payload,
+        sql_owner_hints=sql_owner_hints,
+    )
     base_payload["changed_symbols"] = changed_symbols
     impact_result = {
         "status": "skipped",
@@ -791,7 +837,8 @@ def analyze_diff_in_batches(
         }
 
         batch_changed_symbols = extract_changed_symbols(
-            {"files": batch.files}
+            {"files": batch.files},
+            sql_owner_hints=sql_owner_hints,
         )
         batch_payload["changed_symbols"] = batch_changed_symbols
         batch_symbol_names = {

@@ -328,7 +328,7 @@ class RepositoryToolRuntime:
 
             use_bigquery_semantic = (
                 str(item["changed_file"]).lower().endswith(".sql")
-                and item["symbol_type"] in {"table", "column"}
+                and item["symbol_type"] in {"table", "column", "function"}
             )
 
             for revision_alias in ("base", "head"):

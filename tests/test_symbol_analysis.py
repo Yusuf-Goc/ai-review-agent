@@ -451,5 +451,148 @@ class SymbolAnalysisTests(unittest.TestCase):
         self.assertEqual(("CalculateTotal", "function"), go_symbol)
 
 
+    def test_uses_repository_owner_hint_for_body_only_view_change(self):
+        payload = {
+            "files": [
+                {
+                    "path": "views/customer_summary.sql",
+                    "hunks": [
+                        {
+                            "section_header": "",
+                            "lines": [
+                                {
+                                    "kind": "removed",
+                                    "source_line": 8,
+                                    "content": "  COUNT(*) AS customer_count",
+                                },
+                                {
+                                    "kind": "added",
+                                    "target_line": 8,
+                                    "content": "  COUNTIF(c.status = 'active') AS customer_count",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        hints = {
+            "views/customer_summary.sql": {
+                "base": {
+                    "definitions": [
+                        {
+                            "object_type": "view",
+                            "qualified_name": "sales.customer_summary",
+                        }
+                    ]
+                },
+                "head": {
+                    "definitions": [
+                        {
+                            "object_type": "view",
+                            "qualified_name": "sales.customer_summary",
+                        }
+                    ]
+                },
+            }
+        }
+
+        result = extract_changed_symbols(payload, sql_owner_hints=hints)
+
+        self.assertEqual(1, len(result))
+        self.assertEqual("sales.customer_summary", result[0]["symbol"])
+        self.assertEqual("table", result[0]["symbol_type"])
+        self.assertEqual("modified", result[0]["change_type"])
+        self.assertEqual(
+            ["repository_definition"],
+            result[0]["detected_from"],
+        )
+
+    def test_uses_repository_owner_hint_for_body_only_procedure_change(self):
+        payload = {
+            "files": [
+                {
+                    "path": "procedures/refresh_customers.sql",
+                    "hunks": [
+                        {
+                            "section_header": "",
+                            "lines": [
+                                {
+                                    "kind": "removed",
+                                    "source_line": 12,
+                                    "content": "  WHERE status = 'new';",
+                                },
+                                {
+                                    "kind": "added",
+                                    "target_line": 12,
+                                    "content": "  WHERE status IN ('new', 'retry');",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        definition = {
+            "object_type": "procedure",
+            "qualified_name": "sales.refresh_customers",
+        }
+        hints = {
+            "procedures/refresh_customers.sql": {
+                "base": {"definitions": [definition]},
+                "head": {"definitions": [definition]},
+            }
+        }
+
+        result = extract_changed_symbols(payload, sql_owner_hints=hints)
+
+        self.assertEqual(1, len(result))
+        self.assertEqual("sales.refresh_customers", result[0]["symbol"])
+        self.assertEqual("function", result[0]["symbol_type"])
+        self.assertEqual("modified", result[0]["change_type"])
+
+    def test_ambiguous_repository_owner_hint_is_not_guessed(self):
+        payload = {
+            "files": [
+                {
+                    "path": "routines/multiple.sql",
+                    "hunks": [
+                        {
+                            "section_header": "",
+                            "lines": [
+                                {
+                                    "kind": "added",
+                                    "target_line": 20,
+                                    "content": "  SELECT 2;",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        definitions = [
+            {
+                "object_type": "procedure",
+                "qualified_name": "sales.first_proc",
+            },
+            {
+                "object_type": "procedure",
+                "qualified_name": "sales.second_proc",
+            },
+        ]
+        hints = {
+            "routines/multiple.sql": {
+                "base": {"definitions": definitions},
+                "head": {"definitions": definitions},
+            }
+        }
+
+        self.assertEqual(
+            [],
+            extract_changed_symbols(payload, sql_owner_hints=hints),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

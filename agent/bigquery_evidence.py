@@ -46,6 +46,49 @@ _TYPE_WORDS = {
 _UNQUALIFIED_COLUMN_CLAUSES = {
     "select", "on", "where", "group", "order", "having", "qualify", "set",
 }
+_BIGQUERY_BUILTIN_FUNCTIONS = {
+    "ABS", "ACOS", "ACOSH", "ANY_VALUE", "APPROX_COUNT_DISTINCT",
+    "APPROX_QUANTILES", "APPROX_TOP_COUNT", "APPROX_TOP_SUM", "ARRAY",
+    "ARRAY_AGG", "ARRAY_CONCAT", "ARRAY_LENGTH", "ARRAY_REVERSE",
+    "ARRAY_TO_STRING", "ASCII", "ASIN", "ASINH", "ATAN", "ATAN2",
+    "ATANH", "AVG", "BIT_AND", "BIT_COUNT", "BIT_OR", "BIT_XOR",
+    "BYTE_LENGTH", "CAST", "CEIL", "CEILING", "CHAR_LENGTH",
+    "CHARACTER_LENGTH", "CHR", "COALESCE", "CODE_POINTS_TO_BYTES",
+    "CODE_POINTS_TO_STRING", "CONCAT", "CONTAINS_SUBSTR", "CORR",
+    "COS", "COSH", "COUNT", "COUNTIF", "COVAR_POP", "COVAR_SAMP",
+    "CURRENT_DATE", "CURRENT_DATETIME", "CURRENT_TIME",
+    "CURRENT_TIMESTAMP", "DATE", "DATE_ADD", "DATE_DIFF", "DATE_SUB",
+    "DATE_TRUNC", "DATETIME", "DATETIME_ADD", "DATETIME_DIFF",
+    "DATETIME_SUB", "DATETIME_TRUNC", "DENSE_RANK", "DIV", "ENDS_WITH",
+    "ERROR", "EXP", "EXTRACT", "FARM_FINGERPRINT", "FIRST_VALUE",
+    "FLOOR", "FORMAT", "FORMAT_DATE", "FORMAT_DATETIME", "FORMAT_TIME",
+    "FORMAT_TIMESTAMP", "FROM_BASE32", "FROM_BASE64", "GENERATE_ARRAY",
+    "GENERATE_DATE_ARRAY", "GENERATE_TIMESTAMP_ARRAY", "GREATEST",
+    "IEEE_DIVIDE", "IF", "IFNULL", "INITCAP", "INSTR", "IS_INF",
+    "IS_NAN", "JSON_EXTRACT", "JSON_EXTRACT_ARRAY",
+    "JSON_EXTRACT_SCALAR", "JSON_QUERY", "JSON_QUERY_ARRAY", "JSON_VALUE",
+    "JSON_VALUE_ARRAY", "LAG", "LAST_DAY", "LAST_VALUE", "LEAD",
+    "LEAST", "LEFT", "LENGTH", "LN", "LOG", "LOG10", "LOGICAL_AND",
+    "LOGICAL_OR", "LOWER", "LPAD", "LTRIM", "MAX", "MD5", "MIN",
+    "MOD", "NET_HOST", "NET_IP_FROM_STRING", "NET_IP_TO_STRING",
+    "NET_PUBLIC_SUFFIX", "NET_REG_DOMAIN", "NORMALIZE",
+    "NORMALIZE_AND_CASEFOLD", "NTH_VALUE", "NTILE", "NULLIF", "OCTET_LENGTH",
+    "PARSE_DATE", "PARSE_DATETIME", "PARSE_JSON", "PARSE_NUMERIC",
+    "PARSE_TIME", "PARSE_TIMESTAMP", "PERCENT_RANK", "POW", "POWER",
+    "RANK", "REGEXP_CONTAINS", "REGEXP_EXTRACT", "REGEXP_EXTRACT_ALL",
+    "REGEXP_INSTR", "REGEXP_REPLACE", "REPEAT", "REPLACE", "REVERSE",
+    "RIGHT", "ROUND", "ROW_NUMBER", "RPAD", "RTRIM", "SAFE_CAST",
+    "SHA1", "SHA256", "SHA512", "SIGN", "SIN", "SINH", "SOUNDEX",
+    "SPLIT", "SQRT", "STARTS_WITH", "STDDEV", "STDDEV_POP", "STDDEV_SAMP",
+    "STRING", "STRING_AGG", "STRPOS", "SUBSTR", "SUBSTRING", "SUM",
+    "TAN", "TANH", "TIME", "TIME_ADD", "TIME_DIFF", "TIME_SUB",
+    "TIME_TRUNC", "TIMESTAMP", "TIMESTAMP_ADD", "TIMESTAMP_DIFF",
+    "TIMESTAMP_MICROS", "TIMESTAMP_MILLIS", "TIMESTAMP_SECONDS",
+    "TIMESTAMP_SUB", "TIMESTAMP_TRUNC", "TO_BASE32", "TO_BASE64",
+    "TO_CODE_POINTS", "TO_HEX", "TO_JSON", "TO_JSON_STRING", "TRANSLATE",
+    "TRIM", "TRUNC", "UNICODE", "UNNEST", "UPPER", "VAR_POP", "VAR_SAMP",
+    "VARIANCE",
+}
 
 
 def _tokenize(sql_text: str) -> list[_Token]:
@@ -1054,6 +1097,149 @@ def _collect_references(
     return references
 
 
+def _routine_reference_from_parts(
+    *,
+    path: str,
+    token: _Token,
+    parts: list[str],
+    routine_kind: str,
+    clause: str,
+    confidence_override: str | None = None,
+    reason_override: str | None = None,
+) -> dict[str, Any]:
+    normalized = _normalize_object(parts)
+    confidence = confidence_override or (
+        "confirmed" if normalized["dataset"] else "possible"
+    )
+    reason = reason_override or (
+        "Dataset veya project ile nitelendirilmis BigQuery routine cagrisi."
+        if confidence == "confirmed"
+        else "Routine adi nitelendirilmemis; default dataset bilinmedigi icin kesin cozumlenemedi."
+    )
+    return {
+        "path": path,
+        "line": token.line,
+        "raw_reference": ".".join(parts),
+        "reference_type": "routine",
+        "routine_kind": routine_kind,
+        **normalized,
+        "resolved_object": normalized["qualified_name"],
+        "clause": clause,
+        "confidence": confidence,
+        "reason": reason,
+    }
+
+
+def _collect_routine_references(
+    tokens: list[_Token],
+    *,
+    path: str,
+    sources: list[dict[str, Any]],
+    consumed: set[int],
+    excluded: set[int] | None = None,
+) -> tuple[list[dict[str, Any]], set[int]]:
+    references: list[dict[str, Any]] = []
+    routine_consumed: set[int] = set()
+    excluded_indexes = set(excluded or set())
+
+    for source in sources:
+        if source.get("source_type") != "table_function":
+            continue
+        parts = [
+            str(part)
+            for part in (
+                source.get("project"),
+                source.get("dataset"),
+                source.get("object"),
+            )
+            if isinstance(part, str) and part
+        ]
+        if not parts:
+            continue
+        references.append(
+            _routine_reference_from_parts(
+                path=path,
+                token=_Token(
+                    str(source.get("raw_name") or parts[-1]),
+                    str(source.get("raw_name") or parts[-1]).upper(),
+                    "word",
+                    int(source.get("line") or 1),
+                ),
+                parts=parts,
+                routine_kind="table_function",
+                clause=str(source.get("clause") or "from"),
+                confidence_override=str(source.get("confidence") or "possible"),
+                reason_override=str(source.get("reason") or "BigQuery table function kaynagi."),
+            )
+        )
+
+    index = 0
+    while index < len(tokens):
+        if index in excluded_indexes or index in consumed:
+            index += 1
+            continue
+
+        token = tokens[index]
+        if token.upper == "CALL":
+            parts, next_index, identifier_indexes = _identifier_parts(tokens, index + 1)
+            if parts:
+                references.append(
+                    _routine_reference_from_parts(
+                        path=path,
+                        token=tokens[index + 1],
+                        parts=parts,
+                        routine_kind="procedure",
+                        clause="call",
+                    )
+                )
+                routine_consumed.add(index)
+                routine_consumed.update(identifier_indexes)
+                index = max(next_index, index + 1)
+                continue
+
+        if not _is_identifier(token):
+            index += 1
+            continue
+
+        parts, next_index, identifier_indexes = _identifier_parts(tokens, index)
+        if (
+            not parts
+            or identifier_indexes & (consumed | excluded_indexes)
+            or next_index >= len(tokens)
+            or tokens[next_index].value != "("
+        ):
+            index = max(index + 1, next_index)
+            continue
+
+        previous = tokens[index - 1] if index > 0 else None
+        if previous is not None and previous.value == ".":
+            index = next_index
+            continue
+
+        first_upper = parts[0].upper()
+        if len(parts) == 1 and (
+            first_upper in _BIGQUERY_BUILTIN_FUNCTIONS
+            or first_upper in _RESERVED_WORDS
+            or first_upper in _TYPE_WORDS
+        ):
+            index = next_index
+            continue
+
+        references.append(
+            _routine_reference_from_parts(
+                path=path,
+                token=token,
+                parts=parts,
+                routine_kind="function",
+                clause=_clause_at(tokens, index, excluded=excluded_indexes),
+            )
+        )
+        routine_consumed.update(identifier_indexes)
+        index = next_index
+
+    return references, routine_consumed
+
+
 def _find_scalar_query_scopes(
     tokens: list[_Token],
     excluded: set[int],
@@ -1112,18 +1298,28 @@ def _analyze_scope(
     for item in scalar_scopes:
         excluded.update(range(item["start"] - 1, item["end"] + 1))
 
+    base_reference_consumed = (
+        set(base_consumed or set()) | cte_consumed | source_consumed
+    )
+    routine_references, routine_consumed = _collect_routine_references(
+        tokens,
+        path=path,
+        sources=sources,
+        consumed=base_reference_consumed,
+        excluded=excluded,
+    )
     references = _collect_references(
         tokens,
         path=path,
         sources=sources,
         cte_names=local_cte_names,
-        consumed=set(base_consumed or set()) | cte_consumed | source_consumed,
+        consumed=base_reference_consumed | routine_consumed,
         parameters=parameters,
         excluded=excluded,
         inherited_sources=inherited_sources,
     )
 
-    for collection in (ctes, sources, references):
+    for collection in (ctes, sources, references, routine_references):
         for item in collection:
             item["scope"] = scope
 
@@ -1131,6 +1327,7 @@ def _analyze_scope(
         "ctes": list(ctes),
         "sources": list(sources),
         "references": list(references),
+        "routine_references": list(routine_references),
     }
     visible_sources = list(sources) + list(inherited_sources or [])
     for nested_index, nested in enumerate(nested_scopes, start=1):
@@ -1172,6 +1369,7 @@ def analyze_bigquery_sql(
     all_mutations: list[dict[str, Any]] = []
     all_sources: list[dict[str, Any]] = []
     all_references: list[dict[str, Any]] = []
+    all_routine_references: list[dict[str, Any]] = []
     all_ctes: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
 
@@ -1195,6 +1393,7 @@ def analyze_bigquery_sql(
                 scoped["ctes"],
                 scoped["sources"],
                 scoped["references"],
+                scoped["routine_references"],
             ):
                 for item in collection:
                     item["statement"] = statement_index
@@ -1204,6 +1403,7 @@ def analyze_bigquery_sql(
             all_ctes.extend(scoped["ctes"])
             all_sources.extend(scoped["sources"])
             all_references.extend(scoped["references"])
+            all_routine_references.extend(scoped["routine_references"])
         except (IndexError, TypeError, ValueError) as exc:
             errors.append({
                 "statement": statement_index,
@@ -1217,6 +1417,7 @@ def analyze_bigquery_sql(
         "mutations": all_mutations,
         "sources": all_sources,
         "references": all_references,
+        "routine_references": all_routine_references,
         "ctes": all_ctes,
         "errors": errors,
     }

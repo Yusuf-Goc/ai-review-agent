@@ -9,6 +9,7 @@ from agent.repository_tools import (
     compare_symbol,
     find_bigquery_references,
     find_symbol_definitions,
+    get_bigquery_file_definitions,
     read_file_section,
     search_project_docs,
     search_symbol,
@@ -63,6 +64,36 @@ class RepositoryToolsTests(unittest.TestCase):
         (self.repo / "country_noise.sql").write_text(
             "-- sales.customers.country is only a comment\n"
             "SELECT 'country' AS label;\n",
+            encoding="utf-8",
+        )
+        (self.repo / "routines.sql").write_text(
+            "CREATE OR REPLACE FUNCTION sales.calculate_country(value STRING)\n"
+            "AS (UPPER(value));\n"
+            "CREATE OR REPLACE PROCEDURE sales.refresh_customers()\n"
+            "BEGIN\n"
+            "  SELECT 1;\n"
+            "END;\n"
+            "CREATE OR REPLACE TABLE FUNCTION sales.customer_report(p STRING)\n"
+            "AS (SELECT p AS country);\n",
+            encoding="utf-8",
+        )
+        (self.repo / "routine_consumer.sql").write_text(
+            "SELECT sales.calculate_country('TR');\n"
+            "CALL sales.refresh_customers();\n"
+            "SELECT * FROM sales.customer_report(@country);\n",
+            encoding="utf-8",
+        )
+        (self.repo / "other_routine_consumer.sql").write_text(
+            "SELECT procurement.calculate_country('TR');\n",
+            encoding="utf-8",
+        )
+        (self.repo / "unqualified_routine.sql").write_text(
+            "SELECT calculate_country('TR');\n",
+            encoding="utf-8",
+        )
+        (self.repo / "routine_noise.sql").write_text(
+            "-- sales.calculate_country(country)\n"
+            "SELECT 'sales.calculate_country(country)' AS label;\n",
             encoding="utf-8",
         )
         self._git("add", ".")
@@ -237,6 +268,73 @@ class RepositoryToolsTests(unittest.TestCase):
                 symbol_type="column",
                 candidate=candidate,
             ),
+        )
+
+    def test_bigquery_routine_references_use_semantic_identity(self):
+        result = find_bigquery_references(
+            self.repo,
+            self.head,
+            "sales.calculate_country",
+            symbol_type="function",
+        )
+
+        self.assertEqual(
+            {"routine_consumer.sql"},
+            {item["path"] for item in result["references"]},
+        )
+        self.assertEqual(
+            {"unqualified_routine.sql"},
+            {item["path"] for item in result["possible_references"]},
+        )
+        all_paths = {
+            item["path"]
+            for item in result["references"] + result["possible_references"]
+        }
+        self.assertNotIn("other_routine_consumer.sql", all_paths)
+        self.assertNotIn("routine_noise.sql", all_paths)
+        self.assertNotIn("routines.sql", all_paths)
+
+    def test_bigquery_procedure_and_table_function_references_are_found(self):
+        procedure = find_bigquery_references(
+            self.repo,
+            self.head,
+            "sales.refresh_customers",
+            symbol_type="function",
+        )
+        table_function = find_bigquery_references(
+            self.repo,
+            self.head,
+            "sales.customer_report",
+            symbol_type="function",
+        )
+
+        self.assertEqual(
+            {"routine_consumer.sql"},
+            {item["path"] for item in procedure["references"]},
+        )
+        self.assertEqual(
+            {"routine_consumer.sql"},
+            {item["path"] for item in table_function["references"]},
+        )
+
+    def test_reads_full_file_bigquery_owner_definitions(self):
+        result = get_bigquery_file_definitions(
+            self.repo,
+            self.head,
+            "routines.sql",
+        )
+
+        self.assertTrue(result["exists"])
+        self.assertEqual(
+            {
+                "sales.calculate_country",
+                "sales.refresh_customers",
+                "sales.customer_report",
+            },
+            {
+                item["qualified_name"]
+                for item in result["definitions"]
+            },
         )
 
     def test_search_project_docs_uses_markdown_only(self):

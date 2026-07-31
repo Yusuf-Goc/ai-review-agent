@@ -2,10 +2,41 @@ import unittest
 from unittest.mock import patch
 
 from agent.review_batcher import ReviewBatch
-from agent.reviewer import analyze_diff_in_batches
+from agent.reviewer import _load_bigquery_owner_hints, analyze_diff_in_batches
 
 
 class PrImpactStatusTests(unittest.TestCase):
+    @patch("agent.reviewer.get_bigquery_file_definitions")
+    def test_loads_bigquery_owner_hints_for_sql_files_only(self, get_definitions):
+        get_definitions.side_effect = [
+            {"definitions": [{"qualified_name": "sales.customer_view"}]},
+            {"definitions": [{"qualified_name": "sales.customer_view"}]},
+        ]
+
+        result = _load_bigquery_owner_hints(
+            repo_root=".",
+            base_sha="base",
+            head_sha="head",
+            files=[
+                {"path": "views/customer_view.sql"},
+                {"path": "service.py"},
+            ],
+        )
+
+        self.assertEqual(
+            {"views/customer_view.sql"},
+            set(result),
+        )
+        self.assertEqual(2, get_definitions.call_count)
+        self.assertEqual(
+            "base",
+            get_definitions.call_args_list[0].args[1],
+        )
+        self.assertEqual(
+            "head",
+            get_definitions.call_args_list[1].args[1],
+        )
+
     def test_failed_impact_analysis_preserves_completed_pr_review(self):
         file_payload = {
             "path": "query.sql",

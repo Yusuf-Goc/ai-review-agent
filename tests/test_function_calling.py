@@ -651,27 +651,37 @@ class RepositoryRuntimeTests(unittest.TestCase):
         )
 
     @patch("agent.function_calling.find_bigquery_references")
-    def test_sql_routine_prefetch_preserves_text_reference_search(
+    def test_sql_routine_prefetch_uses_bigquery_semantic_evidence(
         self,
         find_bigquery,
     ):
+        find_bigquery.side_effect = [
+            {
+                "revision": "base-commit",
+                "references": [
+                    {
+                        "path": "queries/customer_country.sql",
+                        "line": 2,
+                        "confidence": "confirmed",
+                    }
+                ],
+                "possible_references": [],
+                "truncated": False,
+            },
+            {
+                "revision": "head-commit",
+                "references": [],
+                "possible_references": [],
+                "truncated": False,
+            },
+        ]
         runtime = RepositoryToolRuntime(
             repo_root=".",
             base_sha="base",
             head_sha="head",
         )
-        text_result = {
-            "revision": "commit",
-            "symbol": "sales.calculate_country",
-            "references": [],
-            "truncated": False,
-        }
 
-        with patch.object(
-            runtime,
-            "_references",
-            return_value=text_result,
-        ) as text_references:
+        with patch.object(runtime, "_references") as text_references:
             evidence = runtime.collect_reference_evidence(
                 [
                     {
@@ -683,12 +693,21 @@ class RepositoryRuntimeTests(unittest.TestCase):
                 ]
             )
 
-        self.assertEqual(2, text_references.call_count)
-        find_bigquery.assert_not_called()
-        self.assertNotIn("evidence_mode", evidence["symbols"][0])
+        item = evidence["symbols"][0]
+        text_references.assert_not_called()
+        self.assertEqual(2, find_bigquery.call_count)
+        self.assertEqual(
+            "function",
+            find_bigquery.call_args_list[0].kwargs["symbol_type"],
+        )
+        self.assertEqual("bigquery_semantic", item["evidence_mode"])
+        self.assertEqual(
+            ["queries/customer_country.sql"],
+            [reference["path"] for reference in item["references_base"]],
+        )
         self.assertTrue(
             all(
-                trace["name"] == "find_symbol_references"
+                trace["name"] == "find_bigquery_references"
                 for trace in runtime.tool_trace
             )
         )

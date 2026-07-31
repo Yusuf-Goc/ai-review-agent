@@ -237,5 +237,68 @@ class BigQueryEvidenceTests(unittest.TestCase):
         self.assertEqual("ignored", cte_ref["confidence"])
 
 
+    def test_collects_qualified_scalar_function_and_procedure_calls(self):
+        result = analyze_bigquery_sql(
+            """
+            SELECT sales.calculate_country(c.country)
+            FROM sales.customers c;
+            CALL sales.refresh_customers(@country);
+            """,
+            path="routine_consumer.sql",
+        )
+        by_name = {
+            item["raw_reference"]: item
+            for item in result["routine_references"]
+        }
+        self.assertEqual(
+            "confirmed",
+            by_name["sales.calculate_country"]["confidence"],
+        )
+        self.assertEqual(
+            "function",
+            by_name["sales.calculate_country"]["routine_kind"],
+        )
+        self.assertEqual(
+            "procedure",
+            by_name["sales.refresh_customers"]["routine_kind"],
+        )
+
+    def test_collects_table_function_source_as_routine_reference(self):
+        result = analyze_bigquery_sql(
+            "SELECT * FROM sales.customer_report(@country);",
+            path="table_function_consumer.sql",
+        )
+        reference = next(
+            item
+            for item in result["routine_references"]
+            if item["raw_reference"] == "sales.customer_report"
+        )
+        self.assertEqual("table_function", reference["routine_kind"])
+        self.assertEqual("confirmed", reference["confidence"])
+
+    def test_unqualified_udf_is_possible_but_builtin_is_ignored(self):
+        result = analyze_bigquery_sql(
+            "SELECT calculate_country(country), COUNT(*) "
+            "FROM sales.customers;",
+            path="routine_consumer.sql",
+        )
+        names = {
+            item["raw_reference"]: item
+            for item in result["routine_references"]
+        }
+        self.assertEqual("possible", names["calculate_country"]["confidence"])
+        self.assertNotIn("COUNT", names)
+
+    def test_routine_definition_name_is_not_reported_as_call(self):
+        result = analyze_bigquery_sql(
+            """
+            CREATE OR REPLACE FUNCTION sales.calculate_country(value STRING)
+            AS (UPPER(value));
+            """,
+            path="routine.sql",
+        )
+        self.assertEqual([], result["routine_references"])
+
+
 if __name__ == "__main__":
     unittest.main()

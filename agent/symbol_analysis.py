@@ -447,7 +447,107 @@ def _collect_bigquery_hunk_events(
             detected_from="bigquery_evidence",
         )
 
-def extract_changed_symbols(review_payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _owner_hint_definition(
+    side_hint: Any,
+) -> tuple[str, str] | None:
+    if not isinstance(side_hint, dict):
+        return None
+    definitions = [
+        item
+        for item in side_hint.get("definitions", [])
+        if isinstance(item, dict)
+    ]
+    owners: dict[tuple[str, str], None] = {}
+    for definition in definitions:
+        symbol = definition.get("qualified_name")
+        symbol_type = _sql_symbol_type(definition.get("object_type"))
+        if isinstance(symbol, str) and symbol and symbol_type:
+            owners[(symbol, symbol_type)] = None
+    if len(owners) != 1:
+        return None
+    return next(iter(owners))
+
+
+def _collect_sql_owner_hint_events(
+    events: dict[tuple[str, str, str], dict[str, Any]],
+    *,
+    path: str,
+    file_payload: dict[str, Any],
+    owner_hint: Any,
+) -> None:
+    if not isinstance(owner_hint, dict):
+        return
+
+    source_lines: set[int] = set()
+    target_lines: set[int] = set()
+    meaningful_change = False
+    for hunk in file_payload.get("hunks", []):
+        for line in hunk.get("lines", []):
+            kind = line.get("kind")
+            if kind not in {"added", "removed"}:
+                continue
+            content = str(line.get("content", ""))
+            if _is_comment_or_blank(path, content):
+                continue
+            meaningful_change = True
+            if kind == "removed" and isinstance(line.get("source_line"), int):
+                source_lines.add(line["source_line"])
+            if kind == "added" and isinstance(line.get("target_line"), int):
+                target_lines.add(line["target_line"])
+
+    if not meaningful_change:
+        return
+
+    base_owner = _owner_hint_definition(owner_hint.get("base"))
+    head_owner = _owner_hint_definition(owner_hint.get("head"))
+    if base_owner is None and head_owner is None:
+        return
+
+    if base_owner == head_owner and base_owner is not None:
+        symbol, symbol_type = base_owner
+        _record_event(
+            events,
+            path=path,
+            symbol=symbol,
+            symbol_type=symbol_type,
+            change_type="modified",
+            source_lines=source_lines,
+            target_lines=target_lines,
+            detected_from="repository_definition",
+        )
+        return
+
+    if base_owner is not None:
+        symbol, symbol_type = base_owner
+        _record_event(
+            events,
+            path=path,
+            symbol=symbol,
+            symbol_type=symbol_type,
+            change_type="deleted",
+            source_lines=source_lines,
+            target_lines=set(),
+            detected_from="repository_definition",
+        )
+    if head_owner is not None:
+        symbol, symbol_type = head_owner
+        _record_event(
+            events,
+            path=path,
+            symbol=symbol,
+            symbol_type=symbol_type,
+            change_type="added",
+            source_lines=set(),
+            target_lines=target_lines,
+            detected_from="repository_definition",
+        )
+
+
+def extract_changed_symbols(
+    review_payload: dict[str, Any],
+    *,
+    sql_owner_hints: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     events: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     for file_payload in review_payload.get("files", []):
@@ -463,6 +563,12 @@ def extract_changed_symbols(review_payload: dict[str, Any]) -> list[dict[str, An
                     path=path,
                     hunk=hunk,
                 )
+            _collect_sql_owner_hint_events(
+                events,
+                path=path,
+                file_payload=file_payload,
+                owner_hint=(sql_owner_hints or {}).get(path),
+            )
             continue
 
         for hunk in file_payload.get("hunks", []):

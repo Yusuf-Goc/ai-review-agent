@@ -487,6 +487,72 @@ def _build_bigquery_repository_index(
     }
 
 
+def get_bigquery_file_definitions(
+    repo_root: str | Path,
+    revision: str,
+    path: str,
+) -> dict[str, Any]:
+    """Bir SQL dosyasinin tam revision icerigindeki BigQuery nesnelerini getirir.
+
+    Bu yardimci diff hunk'inda DDL basligi gorunmeyen view veya routine govde
+    degisikliklerini dosyanin gercek CREATE tanimiyla eslestirmek icin kullanilir.
+    Dosya ilgili revision'da yoksa ``exists`` false ve definitions bos doner.
+    """
+    safe_path = _normalize_path(path, extensions={".sql"})
+    commit = resolve_revision(repo_root, revision)
+    exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}:{safe_path}"],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if exists.returncode != 0:
+        return {
+            "revision": commit,
+            "path": safe_path,
+            "exists": False,
+            "definitions": [],
+            "errors": [],
+            "skipped": False,
+        }
+
+    result = _run_git(repo_root, ["show", f"{commit}:{safe_path}"])
+    source_text = result.stdout
+    if len(source_text) > MAX_BIGQUERY_FILE_CHARS:
+        return {
+            "revision": commit,
+            "path": safe_path,
+            "exists": True,
+            "definitions": [],
+            "errors": [],
+            "skipped": True,
+            "skip_reason": "SQL dosyasi BigQuery evidence karakter limitini asti.",
+        }
+
+    analysis = analyze_bigquery_sql(source_text, path=safe_path)
+    owners = []
+    for definition in analysis.get("definitions", []):
+        if not isinstance(definition, dict):
+            continue
+        if str(definition.get("action", "create")).casefold() != "create":
+            continue
+        if str(definition.get("object_type", "")).casefold() not in {
+            "view", "function", "table_function", "procedure",
+        }:
+            continue
+        owners.append(dict(definition))
+
+    return {
+        "revision": commit,
+        "path": safe_path,
+        "exists": True,
+        "definitions": owners,
+        "errors": list(analysis.get("errors", [])),
+        "skipped": False,
+    }
+
+
 def find_bigquery_references(
     repo_root: str | Path,
     revision: str,
@@ -528,8 +594,16 @@ def find_bigquery_references(
         if normalized_type == "column":
             candidates = analysis.get("references", [])
             reference_type = "column"
+        elif normalized_type == "function":
+            candidates = analysis.get("routine_references", [])
+            reference_type = "routine"
         else:
-            candidates = analysis.get("sources", [])
+            candidates = [
+                candidate
+                for candidate in analysis.get("sources", [])
+                if isinstance(candidate, dict)
+                and candidate.get("source_type") == "table"
+            ]
             reference_type = "object"
 
         for candidate in candidates:
