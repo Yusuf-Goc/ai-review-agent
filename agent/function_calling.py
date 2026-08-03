@@ -558,11 +558,11 @@ Kurallar:
     high API uyumluluk riski olarak degerlendir; yalnizca olasi harici tuketici
     varsayimiyla critical deme.
 14. Tool arastirmasi tamamlandiginda yalnizca gecerli JSON don.
-15. Tum aciklama metinleri Turkce olsun.
+15. Write all explanatory text in English.
 
 Beklenen JSON semasi:
 {{
-  "summary": "Capraz dosya etki analizinin Turkce ozeti",
+  "summary": "Cross-file impact summary in English",
   "impact_analysis": [
     {{
       "symbol": "sembol_adi",
@@ -572,7 +572,7 @@ Beklenen JSON semasi:
       "definition_files": ["tanim/dosyasi.py"],
       "reference_files_base": ["eski/kullanim.py"],
       "reference_files_head": ["yeni/kullanim.py"],
-      "impact": "Degisikligin diger dosyalara etkisi",
+      "impact": "Impact of the change on other files in English",
       "evidence": ["dosya.py:42"]
     }}
   ]

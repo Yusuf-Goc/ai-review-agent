@@ -23,6 +23,7 @@ class PrChangeReportingTests(unittest.TestCase):
         self.assertIn('"repository_relevance"', prompt)
         self.assertIn('"relevance_reason"', prompt)
         self.assertIn("otomatik olarak `unrelated` sayma", prompt)
+        self.assertIn("all explanatory response text in English", prompt)
 
     def test_added_symbol_relevance_defaults_to_unclear(self):
         result = normalize_json_response(
@@ -56,7 +57,7 @@ class PrChangeReportingTests(unittest.TestCase):
                 "changes": [
                     {
                         "file": "function_test/value_utils.py",
-                        "symbol": "dosya geneli",
+                        "symbol": "entire file",
                         "symbol_type": "file",
                         "change_type": "added",
                         "after": "Yeni yardımcı modül eklendi.",
@@ -79,13 +80,13 @@ class PrChangeReportingTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("### Değişiklikler", report)
-        self.assertIn("`function_test/value_utils.py` — `dosya geneli`", report)
+        self.assertIn("### Changes", report)
+        self.assertIn("`function_test/value_utils.py` — `entire file`", report)
         self.assertIn("`function_test/value_utils.py` — `clamp`", report)
-        self.assertIn("Repository ilişkisi:** `İlgili`", report)
-        self.assertIn("### Bulgular", report)
+        self.assertIn("Repository relevance:** `Related`", report)
+        self.assertIn("### Findings", report)
         self.assertIn(
-            "Kritik, yüksek veya orta seviyede bulgu tespit edilmedi",
+            "No critical, high, or medium severity findings were detected",
             report,
         )
 
@@ -125,7 +126,7 @@ class PrChangeReportingTests(unittest.TestCase):
 
         self.assertEqual(1, report.count(marker))
         self.assertNotIn("- **Değişiklik:**", report)
-        self.assertIn("Diğer kullanımlar:** `consumer.py`", report)
+        self.assertIn("Other usages:** `consumer.py`", report)
         self.assertIn("Problem:** Hesaplama yanlış sonuç üretiyor.", report)
 
 
@@ -133,7 +134,7 @@ class PrChangeReportingTests(unittest.TestCase):
         changes = [
             {
                 "file": "function_test/value_utils.py",
-                "symbol": "dosya geneli",
+                "symbol": "entire file",
                 "symbol_type": "file",
                 "change_type": "added",
                 "repository_relevance": "related",
@@ -162,11 +163,11 @@ class PrChangeReportingTests(unittest.TestCase):
         self.assertEqual("unclear", result[0]["repository_relevance"])
         self.assertEqual("unclear", result[1]["repository_relevance"])
         self.assertIn(
-            "tek basina iliski kaniti sayilmadi",
+            "naming alone were not treated",
             result[0]["relevance_reason"],
         )
         self.assertIn(
-            "tek basina iliski kaniti sayilmadi",
+            "naming alone were not treated",
             result[1]["relevance_reason"],
         )
 
@@ -184,7 +185,7 @@ class PrChangeReportingTests(unittest.TestCase):
                     "sql_agent_test/queries/"
                     "new_customer_country_report.sql"
                 ),
-                "symbol": "dosya geneli",
+                "symbol": "entire file",
                 "symbol_type": "file",
                 "change_type": "added",
             },
@@ -218,7 +219,7 @@ class PrChangeReportingTests(unittest.TestCase):
             column_change["repository_relevance"],
         )
         self.assertIn(
-            "Yalnizca ayni PR'da eklenen dosyalarda",
+            "only in files added by this PR",
             column_change["relevance_reason"],
         )
         self.assertIn(
@@ -230,7 +231,7 @@ class PrChangeReportingTests(unittest.TestCase):
         changes = [
             {
                 "file": "function_test/value_utils.py",
-                "symbol": "dosya geneli",
+                "symbol": "entire file",
                 "symbol_type": "file",
                 "change_type": "added",
             },
@@ -279,7 +280,7 @@ class PrChangeReportingTests(unittest.TestCase):
         changes = [
             {
                 "file": "function_test/use_value_utils.py",
-                "symbol": "dosya geneli",
+                "symbol": "entire file",
                 "symbol_type": "file",
                 "change_type": "added",
             },
@@ -291,7 +292,7 @@ class PrChangeReportingTests(unittest.TestCase):
             },
             {
                 "file": "function_test/value_utils.py",
-                "symbol": "dosya geneli",
+                "symbol": "entire file",
                 "symbol_type": "file",
                 "change_type": "added",
             },
@@ -329,7 +330,7 @@ class PrChangeReportingTests(unittest.TestCase):
         file_change = by_symbol[
             (
                 "function_test/value_utils.py",
-                "dosya geneli",
+                "entire file",
             )
         ]
         function_change = by_symbol[
@@ -349,7 +350,7 @@ class PrChangeReportingTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "ayni PR'da eklenen",
+            "files added by this PR",
             file_change["relevance_reason"],
         )
         self.assertIn(
@@ -357,7 +358,7 @@ class PrChangeReportingTests(unittest.TestCase):
             file_change["relevance_reason"],
         )
         self.assertIn(
-            "Mevcut repository dosyalarina baglanti kanitlanmadi",
+            "connection to pre-existing repository files was not established",
             function_change["relevance_reason"],
         )
 
@@ -369,7 +370,7 @@ class PrChangeReportingTests(unittest.TestCase):
                     "sql_agent_test/queries/"
                     "new_customer_country_report.sql"
                 ),
-                "symbol": "dosya geneli",
+                "symbol": "entire file",
                 "symbol_type": "file",
                 "change_type": "added",
                 "after": "Model tarafindan aciklanan yeni dosya.",
@@ -560,7 +561,7 @@ class PrChangeReportingTests(unittest.TestCase):
             column["repository_relevance"],
         )
         self.assertIn(
-            "Yalnizca ayni PR'da eklenen dosyalarda",
+            "only in files added by this PR",
             column["relevance_reason"],
         )
         self.assertIn(query_path, column["relevance_reason"])

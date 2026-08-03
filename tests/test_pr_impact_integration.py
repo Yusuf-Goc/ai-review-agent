@@ -234,9 +234,9 @@ class PrImpactIntegrationTests(unittest.TestCase):
                         "symbol": "calculate_total",
                         "symbol_type": "function",
                         "change_type": "modified",
-                        "before": "Tek parametre aliyordu.",
-                        "after": "Yeni discount parametresi aliyor.",
-                        "behavior_change": "Eski cagrilar uyumsuz hale gelir.",
+                        "before": "It accepted one parameter.",
+                        "after": "It now accepts a discount parameter.",
+                        "behavior_change": "Existing calls may become incompatible.",
                     }
                 ],
                 "findings": [
@@ -246,10 +246,10 @@ class PrImpactIntegrationTests(unittest.TestCase):
                         "severity": "critical",
                         "category": "breaking_change",
                         "message": (
-                            "calculate_total imzasi consumer.py "
-                            "cagrisini kiriyor."
+                            "The calculate_total signature breaks the "
+                            "call in consumer.py."
                         ),
-                        "suggestion": "Eski imzayi koruyun.",
+                        "suggestion": "Preserve the previous signature.",
                     }
                 ],
                 "changed_symbols": [
@@ -275,12 +275,12 @@ class PrImpactIntegrationTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("### Özet", report)
-        self.assertIn("### Bulgular", report)
+        self.assertIn("### Summary", report)
+        self.assertIn("### Findings", report)
         self.assertIn("`calculate_total` — `service.py:2`", report)
-        self.assertIn("- **Önce:** Tek parametre aliyordu.", report)
-        self.assertIn("- **Sonra:** Yeni discount parametresi aliyor.", report)
-        self.assertIn("Diğer kullanımlar:** `consumer.py`", report)
+        self.assertIn("- **Before:** It accepted one parameter.", report)
+        self.assertIn("- **After:** It now accepts a discount parameter.", report)
+        self.assertIn("Other usages:** `consumer.py`", report)
         self.assertNotIn("Çapraz Dosya Etkisi", report)
         self.assertNotIn("Repository analiz kaynakları", report)
 

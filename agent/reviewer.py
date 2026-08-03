@@ -188,35 +188,35 @@ def _deterministic_sql_change(
     }
 
     if symbol_type == "file":
-        change["after"] = "Yeni BigQuery SQL dosyasi eklendi."
+        change["after"] = "A new BigQuery SQL file was added."
         change["behavior_change"] = (
-            "Dosyanin SQL icerigi repository'ye eklendi."
+            "The file's SQL content is now part of the repository."
         )
         return change
 
     labels = {
-        "query": "BigQuery sorgusu",
-        "table": "BigQuery tablo veya view tanimi",
-        "column": "BigQuery kolonu",
-        "function": "BigQuery routine tanimi",
+        "query": "BigQuery query",
+        "table": "BigQuery table or view definition",
+        "column": "BigQuery column",
+        "function": "BigQuery routine definition",
     }
-    label = labels.get(symbol_type, "BigQuery SQL sembolu")
+    label = labels.get(symbol_type, "BigQuery SQL symbol")
 
     if change_type == "added":
-        change["after"] = f"{label} eklendi: `{symbol}`."
+        change["after"] = f"{label} was added: `{symbol}`."
         change["behavior_change"] = (
-            f"`{symbol}` repository'de yeni bir SQL davranisi saglar."
+            f"`{symbol}` introduces new SQL behavior in the repository."
         )
     elif change_type == "deleted":
-        change["before"] = f"{label} kaldirildi: `{symbol}`."
+        change["before"] = f"{label} was removed: `{symbol}`."
         change["behavior_change"] = (
-            f"`{symbol}` artik yeni revision'da bulunmaz."
+            f"`{symbol}` is no longer present in the new revision."
         )
     else:
-        change["before"] = f"{label} onceki revision'da mevcuttu."
-        change["after"] = f"{label} degistirildi: `{symbol}`."
+        change["before"] = f"{label} existed in the previous revision."
+        change["after"] = f"{label} was modified: `{symbol}`."
         change["behavior_change"] = (
-            f"`{symbol}` icin BigQuery SQL tanimi veya davranisi degisti."
+            f"The BigQuery SQL definition or behavior of `{symbol}` changed."
         )
 
     return change
@@ -295,7 +295,7 @@ def ensure_deterministic_sql_changes(
             append_missing(
                 _deterministic_sql_change(
                     path=path,
-                    symbol="dosya geneli",
+                    symbol="entire file",
                     symbol_type="file",
                     change_type="added",
                 )
@@ -552,8 +552,8 @@ def apply_repository_relevance_evidence(
             )
             updated["repository_relevance"] = "related"
             updated["relevance_reason"] = (
-                "PR oncesinde repository'de bulunan dosyalarda "
-                f"kullanim kaniti bulundu: {rendered_files}."
+                "Usage evidence was found in files that existed in the "
+                f"repository before this PR: {rendered_files}."
             )
 
         elif same_pr_added_files:
@@ -563,9 +563,9 @@ def apply_repository_relevance_evidence(
             )
             updated["repository_relevance"] = "unclear"
             updated["relevance_reason"] = (
-                "Yalnizca ayni PR'da eklenen dosyalarda kullanim "
-                f"kaniti bulundu: {rendered_files}. Mevcut repository "
-                "dosyalarina baglanti kanitlanmadi."
+                "Usage evidence was found only in files added by this PR: "
+                f"{rendered_files}. A connection to pre-existing repository "
+                "files was not established."
             )
 
         else:
@@ -573,22 +573,20 @@ def apply_repository_relevance_evidence(
 
             if impact_status == "failed":
                 updated["relevance_reason"] = (
-                    "Repository etki analizi tamamlanamadigi icin "
-                    "bu yeni dosya veya sembolun repository iliskisi "
-                    "kanitlanamadi."
+                    "Repository impact analysis could not be completed, so "
+                    "the repository relevance of this new file or symbol "
+                    "could not be established."
                 )
             elif impact_status == "skipped":
                 updated["relevance_reason"] = (
-                    "Repository etki analizi calismadigi icin "
-                    "bu yeni dosya veya sembolun repository iliskisi "
-                    "kanitlanamadi."
+                    "Repository impact analysis did not run, so the repository "
+                    "relevance of this new file or symbol could not be established."
                 )
             else:
                 updated["relevance_reason"] = (
-                    "Repository aramasinda degisen dosya disinda "
-                    "import, cagri veya kullanim kaniti bulunamadi; "
-                    "dosya yolu ve isimlendirme tek basina iliski "
-                    "kaniti sayilmadi."
+                    "No import, call, or usage evidence was found outside the "
+                    "changed file; file path and naming alone were not treated "
+                    "as repository relevance evidence."
                 )
 
         normalized.append(updated)

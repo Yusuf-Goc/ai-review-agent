@@ -49,9 +49,10 @@ Inceleme kurallari:
 7. SQL, Python, C, C++, C#, Java ve diger dillerde dilin kendi syntax/semantik
    kurallarini dikkate al.
 8. JSON verisinde `static_analysis_findings` varsa bunlari dikkate al; dogruysa cevabinda koru.
-9. Cevaptaki tum aciklama metinlerini her zaman Turkce yaz. `summary`, `message`
-   ve `suggestion` alanlari kesinlikle Ingilizce olmamalidir. Kod, dosya yolu,
-   kategori ve teknik anahtar kelimeler aynen kalabilir.
+9. Always write all explanatory response text in English. The `summary`, `before`,
+   `after`, `behavior_change`, `relevance_reason`, `message`, and `suggestion`
+   fields must be in English. Code, file paths, categories, and technical keys
+   may remain unchanged.
 10. JSON içinde `main_branch_file_context` varsa bu bilgi main branch'teki dosyanın
     daha önce çıkarılmış özetidir. PR diff'ini bu bağlamı dikkate alarak yorumla.
     Ancak diff modunda yalnızca PR değişikliğinden kaynaklanan yeni riskleri raporla;
@@ -64,11 +65,11 @@ Inceleme kurallari:
     Yalnızca diff ve verilen bağlamla desteklenen bilgileri yaz; repository genelinde
     görmediğin kullanım veya etki noktalarını varmış gibi uydurma.
 14. Her değişiklik için mümkünse dosya, sembol, sembol tipi, değişiklik tipi,
-    önceki davranış, yeni davranış ve davranış etkisini kısa Türkçe metinlerle belirt.
+    describe the previous behavior, new behavior, and behavioral impact in concise English.
 15. `findings` yalnızca gerçek hata ve riskler içindir. Normal ve doğru değişiklikleri
     bulgu olarak yazma; bunları `changes` alanında açıkla.
 16. Diff yeni bir dosya ekliyorsa `changes` içinde bu dosya için ayrıca bir kayıt üret:
-    `symbol` değeri `dosya geneli`, `symbol_type` değeri `file` ve `change_type` değeri
+    `symbol` değeri `entire file`, `symbol_type` değeri `file` ve `change_type` değeri
     `added` olmalıdır.
 17. Yeni eklenen her önemli function, method, class, struct, table veya query için dosya
     kaydından ayrı bir `changes` kaydı üret. Hata bulunmaması bu kaydı atlama nedeni değildir.
@@ -94,18 +95,18 @@ Inceleme kurallari:
 
 Beklenen JSON semasi:
 {{
-  "summary": "Turkce kisa inceleme ozeti",
+  "summary": "Concise review summary in English",
   "changes": [
     {{
       "file": "dosya/yolu.py",
       "symbol": "degisen_fonksiyon_veya_bos",
       "symbol_type": "function|method|class|struct|variable|table|query|file|unknown",
       "change_type": "added|modified|deleted|renamed|behavior_changed",
-      "before": "Degisiklikten onceki durum veya bos metin",
-      "after": "Degisiklikten sonraki durum",
-      "behavior_change": "Davranisa etkisi veya bos metin",
+      "before": "Behavior before the change or an empty string",
+      "after": "Behavior after the change",
+      "behavior_change": "Behavioral impact or an empty string",
       "repository_relevance": "related|unclear|unrelated",
-      "relevance_reason": "Repository iliskisi icin kisa ve kanita dayali gerekce"
+      "relevance_reason": "Concise evidence-based repository relevance explanation"
     }}
   ],
   "findings": [
@@ -114,8 +115,8 @@ Beklenen JSON semasi:
       "line": 42,
       "severity": "critical|high|medium",
       "category": "syntax_error|logic_error|security_risk|memory_or_resource_leak|breaking_change",
-      "message": "Hatanin nedeni Turkce olarak",
-      "suggestion": "Somut duzeltme onerisi Turkce olarak"
+      "message": "Cause of the issue in English",
+      "suggestion": "Concrete remediation suggestion in English"
     }}
   ]
 }}
@@ -474,4 +475,3 @@ def call_model_with_retries(
             sleep_func(wait_seconds)
 
     raise last_error
-

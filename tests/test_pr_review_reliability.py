@@ -42,8 +42,8 @@ class PrReviewReliabilityTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("PR incelemesi tamamlanamadı", report)
-        self.assertIn("Güvenilir bir ‘hata bulunamadı’ sonucu üretilemedi", report)
+        self.assertIn("The PR review could not be completed", report)
+        self.assertIn("A reliable 'no issues found' result could not be produced", report)
         self.assertNotIn("\nKritik hata bulunamadı.", report)
 
     def test_batched_review_parses_full_diff_and_marks_partial_result(self):

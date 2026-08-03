@@ -18,8 +18,8 @@ def _shorten_text(text: str, max_length: int = MAX_COMMENT_LENGTH) -> str:
     return (
         text[: max_length - 300]
         + "\n\n---\n"
-        + "Rapor GitHub yorum limiti nedeniyle kısaltıldı. "
-        + "Tam sonuç için workflow loglarını kontrol edin."
+        + "The report was shortened because of GitHub's comment limit. "
+        + "Check the workflow logs for the complete result."
     )
 
 
@@ -44,31 +44,31 @@ def _build_pr_summary(review_result: dict, finding_count: int) -> str:
     review_status = review_result.get("review_status", "completed")
     file_count = _reviewed_file_count(review_result)
     scope = (
-        f"PR kapsamında {file_count} dosyadaki değişiklikler"
+        f"Changes across {file_count} {'file' if file_count == 1 else 'files'} in this PR"
         if file_count
-        else "PR değişiklikleri"
+        else "The PR changes"
     )
 
     if review_status == "completed":
         result = (
-            f"Toplam {finding_count} önemli bulgu tespit edildi; değişen "
-            "fonksiyon ve değişkenlerin diğer dosyalardaki kullanımlara "
-            "etkisi aşağıda özetlenmiştir."
+            f"A total of {finding_count} important findings were detected; "
+            "the effects of changed functions and variables on usages in "
+            "other files are summarized below."
             if finding_count
-            else "Kritik, yüksek veya orta seviyede bulgu tespit edilmedi."
+            else "No critical, high, or medium severity findings were detected."
         )
-        return f"{scope} incelendi. {result}"
+        return f"{scope} were reviewed. {result}"
 
     if review_status == "partial":
         return (
-            f"{scope} kısmen incelendi. Elde edilen {finding_count} bulgu "
-            "aşağıda listelenmiştir; tamamlanamayan analiz nedeniyle bu "
-            "rapor temiz bir PR onayı olarak değerlendirilmemelidir."
+            f"{scope} were partially reviewed. The {finding_count} findings "
+            "obtained are listed below; because part of the analysis could "
+            "not be completed, this report must not be treated as a clean PR approval."
         )
 
     return (
-        "PR incelemesi tamamlanamadı. Güvenilir bir temiz sonuç "
-        "üretilemedi; workflow logları kontrol edilmelidir."
+        "The PR review could not be completed. A reliable clean result was "
+        "not produced; check the workflow logs."
     )
 
 
@@ -145,24 +145,24 @@ def format_github_markdown_report(review_result: dict) -> str:
     lines = [
         "## Vestel AI Code Review",
         "",
-        "### Özet",
+        "### Summary",
         "",
         _build_pr_summary(review_result, len(findings)),
         "",
-        "### Değişiklikler",
+        "### Changes",
         "",
     ]
 
     relevance_labels = {
-        "related": "İlgili",
-        "unclear": "Belirsiz",
-        "unrelated": "İlgisiz",
+        "related": "Related",
+        "unclear": "Unclear",
+        "unrelated": "Unrelated",
     }
 
     if changes:
         for index, change in enumerate(changes, start=1):
-            file_name = change.get("file", "bilinmeyen dosya")
-            symbol = change.get("symbol") or "dosya geneli"
+            file_name = change.get("file", "unknown file")
+            symbol = change.get("symbol") or "entire file"
             symbol_type = change.get("symbol_type", "unknown")
             change_type = change.get("change_type", "modified")
 
@@ -170,28 +170,28 @@ def format_github_markdown_report(review_result: dict) -> str:
                 [
                     f"#### {index}. `{file_name}` — `{symbol}`",
                     "",
-                    f"- **Tür:** `{symbol_type}` / `{change_type}`",
+                    f"- **Type:** `{symbol_type}` / `{change_type}`",
                 ]
             )
 
             if change.get("before"):
-                lines.append(f"- **Önce:** {change['before']}")
+                lines.append(f"- **Before:** {change['before']}")
             if change.get("after"):
-                lines.append(f"- **Sonra:** {change['after']}")
+                lines.append(f"- **After:** {change['after']}")
             if change.get("behavior_change"):
                 lines.append(
-                    f"- **Davranış etkisi:** {change['behavior_change']}"
+                    f"- **Behavior impact:** {change['behavior_change']}"
                 )
 
             relevance = change.get("repository_relevance")
             if relevance in relevance_labels:
                 lines.append(
-                    "- **Repository ilişkisi:** "
+                    "- **Repository relevance:** "
                     f"`{relevance_labels[relevance]}`"
                 )
             if change.get("relevance_reason"):
                 lines.append(
-                    "- **İlişki gerekçesi:** "
+                    "- **Relevance evidence:** "
                     f"{change['relevance_reason']}"
                 )
 
@@ -199,24 +199,24 @@ def format_github_markdown_report(review_result: dict) -> str:
     else:
         lines.extend(
             [
-                "Model anlamlı bir değişiklik özeti üretmedi.",
+                "The model did not produce a meaningful change summary.",
                 "",
             ]
         )
 
-    lines.extend(["### Bulgular", ""])
+    lines.extend(["### Findings", ""])
 
     if not findings:
         lines.append(
-            "Kritik, yüksek veya orta seviyede bulgu tespit edilmedi."
+            "No critical, high, or medium severity findings were detected."
             if review_status == "completed"
-            else "Güvenilir bir ‘hata bulunamadı’ sonucu üretilemedi."
+            else "A reliable 'no issues found' result could not be produced."
         )
         return _shorten_text("\n".join(lines))
 
     for index, finding in enumerate(findings, start=1):
-        file_name = finding.get("file", "bilinmeyen dosya")
-        line = finding.get("line", "bilinmeyen satır")
+        file_name = finding.get("file", "unknown file")
+        line = finding.get("line", "unknown line")
         impact = _matching_impact(finding, impact_analysis)
         symbol = impact.get("symbol") if impact else finding.get("symbol")
         title = (
@@ -229,21 +229,21 @@ def format_github_markdown_report(review_result: dict) -> str:
             [
                 title,
                 "",
-                f"- **Seviye:** `{finding.get('severity', 'unknown')}`",
-                f"- **Kategori:** `{finding.get('category', 'unknown')}`",
+                f"- **Severity:** `{finding.get('severity', 'unknown')}`",
+                f"- **Category:** `{finding.get('category', 'unknown')}`",
             ]
         )
 
         usage_files = _usage_files(impact)
         if usage_files:
             lines.append(
-                "- **Diğer kullanımlar:** "
+                "- **Other usages:** "
                 + ", ".join(f"`{item}`" for item in usage_files)
             )
 
         lines.append(f"- **Problem:** {finding.get('message', '')}")
         if finding.get("suggestion"):
-            lines.append(f"- **Öneri:** {finding['suggestion']}")
+            lines.append(f"- **Suggestion:** {finding['suggestion']}")
         lines.append("")
 
     return _shorten_text("\n".join(lines))

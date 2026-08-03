@@ -29,6 +29,7 @@ class PrReviewOutputSchemaTests(unittest.TestCase):
         self.assertIn('"behavior_change"', prompt)
         self.assertIn("repository genelinde", prompt)
         self.assertIn("uydurma", prompt)
+        self.assertIn("all explanatory response text in English", prompt)
 
     def test_normalizer_defaults_and_filters_extended_schema(self):
         result = normalize_json_response(
@@ -144,11 +145,11 @@ class PrReviewOutputSchemaTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("### Özet", report)
-        self.assertIn("### Bulgular", report)
-        self.assertIn("1 dosyadaki değişiklikler incelendi", report)
+        self.assertIn("### Summary", report)
+        self.assertIn("### Findings", report)
+        self.assertIn("Changes across 1 file in this PR were reviewed", report)
         self.assertIn(
-            "Kritik, yüksek veya orta seviyede bulgu tespit edilmedi",
+            "No critical, high, or medium severity findings were detected",
             report,
         )
         self.assertNotIn("Bulgu Sayısı", report)
